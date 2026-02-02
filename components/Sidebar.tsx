@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Search,
   Filter,
@@ -18,9 +18,6 @@ import type {
   Filiere,
   CategorieProduit,
   Produit,
-  Region,
-  Departement,
-  Commune,
   MapLevel,
 } from '@/types/api';
 import {
@@ -28,10 +25,6 @@ import {
   getCategories,
   getProduits,
   searchFilieres,
-  searchProduits,
-  getRegions,
-  getDepartements,
-  getCommunes,
   getAnneesDisponibles,
 } from '@/lib/api';
 import { SkeletonList } from './Skeleton';
@@ -51,19 +44,19 @@ export default function Sidebar({
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'filters' | 'info'>('filters');
-  
+
   // États pour les filtres
   const [filieres, setFilieres] = useState<Filiere[]>([]);
   const [categories, setCategories] = useState<CategorieProduit[]>([]);
   const [produits, setProduits] = useState<Produit[]>([]);
   const [annees, setAnnees] = useState<number[]>([]);
-  
+
   // Sélections
   const [selectedFiliere, setSelectedFiliere] = useState<number | null>(null);
   const [selectedCategorie, setSelectedCategorie] = useState<number | null>(null);
   const [selectedProduit, setSelectedProduit] = useState<number | null>(null);
   const [selectedAnnee, setSelectedAnnee] = useState<number | null>(null);
-  
+
   // Sections ouvertes/fermées
   const [openSections, setOpenSections] = useState({
     filieres: true,
@@ -72,16 +65,30 @@ export default function Sidebar({
     mapLevel: false,
     annee: false,
   });
-  
+
   const [loading, setLoading] = useState(false);
 
-  // Charger les filières au montage
+  // ✅ Ref pour stocker les filtres précédents et éviter les appels en boucle
+  const prevFiltersRef = useRef({
+    filiere_id: null as number | null,
+    categorie_id: null as number | null,
+    produit_id: null as number | null,
+    annee: null as number | null,
+  });
+
+  // ✅ Ref pour stocker onFilterChange — évite de le mettre dans les dépendances
+  const onFilterChangeRef = useRef(onFilterChange);
+  useEffect(() => {
+    onFilterChangeRef.current = onFilterChange;
+  }, [onFilterChange]);
+
+  // ─── Chargement initial ───────────────────────────────────────────────────
   useEffect(() => {
     loadFilieres();
     loadAnnees();
-  }, []);
+  }, []); // ✅ Une seule fois au montage
 
-  // Charger les catégories quand une filière est sélectionnée
+  // ─── Charger catégories quand filière change ─────────────────────────────
   useEffect(() => {
     if (selectedFiliere) {
       loadCategories(selectedFiliere);
@@ -92,7 +99,7 @@ export default function Sidebar({
     }
   }, [selectedFiliere]);
 
-  // Charger les produits quand une catégorie est sélectionnée
+  // ─── Charger produits quand catégorie ou filière change ──────────────────
   useEffect(() => {
     if (selectedCategorie) {
       loadProduits(selectedCategorie, selectedFiliere);
@@ -105,16 +112,31 @@ export default function Sidebar({
     }
   }, [selectedCategorie, selectedFiliere]);
 
-  // Notifier les changements de filtre
+  // ─── Notifier le parent UNIQUEMENT si les filtres ont vraiment changé ─────
   useEffect(() => {
-    onFilterChange({
+    const newFilters = {
       filiere_id: selectedFiliere,
       categorie_id: selectedCategorie,
       produit_id: selectedProduit,
       annee: selectedAnnee,
-    });
-  }, [selectedFiliere, selectedCategorie, selectedProduit, selectedAnnee]);
+    };
 
+    const prev = prevFiltersRef.current;
+
+    // Comparaison simple — on n'appelle onFilterChange que si quelque chose a changé
+    if (
+      prev.filiere_id !== newFilters.filiere_id ||
+      prev.categorie_id !== newFilters.categorie_id ||
+      prev.produit_id !== newFilters.produit_id ||
+      prev.annee !== newFilters.annee
+    ) {
+      prevFiltersRef.current = newFilters;
+      onFilterChangeRef.current(newFilters);
+    }
+  }, [selectedFiliere, selectedCategorie, selectedProduit, selectedAnnee]);
+  // ✅ onFilterChange n'est plus dans les dépendances
+
+  // ─── Fonctions de chargement ──────────────────────────────────────────────
   const loadFilieres = async () => {
     try {
       setLoading(true);
@@ -188,7 +210,7 @@ export default function Sidebar({
   ];
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800" style={{ animation: 'slideRight 0.5s ease-out' }}>
+    <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800">
       {/* Header */}
       <div className="p-6 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-primary-50 to-white dark:from-gray-900 dark:to-gray-950">
         <h2 className="text-2xl font-display font-bold text-gray-900 dark:text-white mb-2">
@@ -245,7 +267,6 @@ export default function Sidebar({
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                   placeholder="Rechercher une filière..."
                   className="w-full px-4 py-3 pr-10 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-500 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                  style={{ animation: 'fadeIn 0.5s ease-in-out' }}
                 />
                 <button
                   onClick={handleSearch}
@@ -268,9 +289,9 @@ export default function Sidebar({
                 </span>
                 {openSections.mapLevel ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
               </button>
-              
+
               {openSections.mapLevel && (
-                <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                <div className="space-y-2 pl-6">
                   {mapLevelOptions.map((option) => {
                     const Icon = option.icon;
                     return (
@@ -305,9 +326,9 @@ export default function Sidebar({
                 </span>
                 {openSections.filieres ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
               </button>
-              
+
               {openSections.filieres && (
-                <div className="space-y-2" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                <div className="space-y-2">
                   {loading ? (
                     <SkeletonList count={3} />
                   ) : (
@@ -355,9 +376,9 @@ export default function Sidebar({
                   </span>
                   {openSections.categories ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
                 </button>
-                
+
                 {openSections.categories && (
-                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                  <div className="space-y-2 pl-6">
                     {categories.map((categorie) => (
                       <button
                         key={categorie.id}
@@ -389,9 +410,9 @@ export default function Sidebar({
                   </span>
                   {openSections.produits ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
                 </button>
-                
+
                 {openSections.produits && (
-                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                  <div className="space-y-2 pl-6">
                     {produits.slice(0, 10).map((produit) => (
                       <button
                         key={produit.id}
@@ -427,9 +448,9 @@ export default function Sidebar({
                 </span>
                 {openSections.annee ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
               </button>
-              
+
               {openSections.annee && annees.length > 0 && (
-                <div className="pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                <div className="pl-6">
                   <select
                     value={selectedAnnee || ''}
                     onChange={(e) => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
@@ -459,15 +480,15 @@ export default function Sidebar({
         ) : (
           <div className="space-y-4">
             {selectedEntity ? (
-              <div className="bg-gradient-to-br from-primary-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-6 border-2 border-primary-200 dark:border-primary-800" style={{ animation: 'fadeIn 0.5s ease-in-out' }}>
+              <div className="bg-gradient-to-br from-primary-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-6 border-2 border-primary-200 dark:border-primary-800">
                 <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white mb-4">
                   {selectedEntity.nom || 'Information'}
                 </h3>
-                
+
                 <div className="space-y-3">
                   {Object.entries(selectedEntity).map(([key, value]) => {
                     if (key === 'id' || key === 'created_at' || key === 'updated_at' || !value) return null;
-                    
+
                     return (
                       <div key={key} className="border-b border-gray-200 dark:border-gray-800 pb-2">
                         <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">

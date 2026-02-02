@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
@@ -26,41 +26,43 @@ export default function MapView({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  // Initialiser la carte immédiatement au montage
+  // ✅ OPTIMISATION : stocker onFeatureClick dans un ref
+  // Ça évite de relancer le useEffect chaque fois que la fonction change
+  const onFeatureClickRef = useRef(onFeatureClick);
+  useEffect(() => {
+    onFeatureClickRef.current = onFeatureClick;
+  }, [onFeatureClick]);
+
+  // ─── Initialisation de la carte (une seule fois) ─────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     try {
-      // Configuration optimisée pour un chargement rapide
       const map = L.map(mapContainerRef.current, {
         center: [7.3697, 12.3547],
         zoom: 6,
         zoomControl: false,
-        preferCanvas: true, // Utiliser Canvas au lieu de SVG (plus rapide)
-        fadeAnimation: false, // Désactiver les animations de fade
+        preferCanvas: true,
+        fadeAnimation: false,
         zoomAnimation: true,
         markerZoomAnimation: false,
       });
 
-      // Ajouter le contrôle de zoom
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Tuiles optimisées avec cache
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
         maxZoom: 19,
         minZoom: 5,
-        updateWhenIdle: true, // Mettre à jour uniquement quand l'utilisateur arrête de zoomer
-        updateWhenZooming: false, // Ne pas mettre à jour pendant le zoom
-        keepBuffer: 2, // Garder plus de tuiles en cache
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 2,
       }).addTo(map);
 
       mapRef.current = map;
       setMapReady(true);
-
-      console.log('%c[MAP] ⚡ Carte initialisée rapidement', 'color: #22c55e; font-weight: bold');
     } catch (error) {
-      console.error('[MAP] Erreur:', error);
+      console.error('[MAP] Erreur d\'initialisation:', error);
     }
 
     return () => {
@@ -70,22 +72,19 @@ export default function MapView({
         setMapReady(false);
       }
     };
-  }, []);
+  }, []); // ✅ Pas de dépendance — s'exécute une seule fois
 
-  // Mettre à jour les données GeoJSON avec optimisations
+  // ─── Mise à jour du GeoJSON sur la carte ──────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !mapReady || !geoData) return;
 
     // Supprimer l'ancienne couche
     if (geoJsonLayerRef.current) {
       mapRef.current.removeLayer(geoJsonLayerRef.current);
+      geoJsonLayerRef.current = null;
     }
 
-    console.log('%c[MAP] 📍 Chargement GeoJSON', 'color: #3b82f6', {
-      features: geoData.features.length,
-    });
-
-    // Style optimisé (fonction simple)
+    // ✅ Style calculé une seule fois pour la couche courante
     const getStyle = (feature: any) => {
       const isSelected = feature?.properties?.id === selectedFeatureId;
       return {
@@ -97,10 +96,8 @@ export default function MapView({
       };
     };
 
-    // Créer la couche GeoJSON avec options de performance
     const geoJsonLayer = L.geoJSON(geoData, {
       style: getStyle,
-      // Utiliser onEachFeature de manière optimisée
       onEachFeature: (feature, layer) => {
         const props = feature.properties;
         if (!props) return;
@@ -115,43 +112,46 @@ export default function MapView({
           opacity: 0.9,
         });
 
-        // Events optimisés
+        // ✅ On utilise le REF pour le callback — pas de re-rendu
         layer.on('click', () => {
-          if (onFeatureClick) {
-            onFeatureClick(props);
+          if (onFeatureClickRef.current) {
+            onFeatureClickRef.current(props);
           }
         });
 
-        // Hover effects légers
-        if (props.id !== selectedFeatureId) {
-          layer.on('mouseover', function() {
-            this.setStyle({ fillOpacity: 0.7, weight: 2 });
+        // Hover
+        layer.on('mouseover', function (this: L.GeoJSON) {
+          this.setStyle({ fillOpacity: 0.7, weight: 2 });
+        });
+        layer.on('mouseout', function (this: L.GeoJSON) {
+          const isSelected = props.id === selectedFeatureId;
+          this.setStyle({
+            fillOpacity: isSelected ? 0.7 : 0.5,
+            weight: isSelected ? 3 : 1,
           });
-          layer.on('mouseout', function() {
-            this.setStyle({ fillOpacity: 0.5, weight: 1 });
-          });
-        }
+        });
       },
     });
 
     geoJsonLayer.addTo(mapRef.current);
     geoJsonLayerRef.current = geoJsonLayer;
 
-    // Ajuster la vue rapidement
+    // Ajuster la vue sur les données
     try {
       const bounds = geoJsonLayer.getBounds();
       if (bounds.isValid()) {
-        mapRef.current.fitBounds(bounds, { 
+        mapRef.current.fitBounds(bounds, {
           padding: [50, 50],
-          animate: false, // Pas d'animation pour un ajustement instantané
+          animate: false,
         });
       }
     } catch (error) {
       console.error('[MAP] Erreur bounds:', error);
     }
-  }, [geoData, mapReady, selectedFeatureId, mapLevel, onFeatureClick]);
+  }, [geoData, mapReady, selectedFeatureId, mapLevel]);
+  // ✅ onFeatureClick n'est PLUS dans les dépendances
 
-  // Zoom optimisé sur sélection
+  // ─── Zoom sur la sélection ────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
 
@@ -160,18 +160,18 @@ export default function MapView({
       if (feature?.properties?.id === selectedFeatureId) {
         const bounds = layer.getBounds();
         if (bounds.isValid()) {
-          mapRef.current!.fitBounds(bounds, { 
+          mapRef.current!.fitBounds(bounds, {
             padding: [100, 100],
             maxZoom: 10,
-            animate: true, // Animation seulement pour le zoom utilisateur
-            duration: 0.5,
+            animate: true,
+            duration: 0.4,
           });
         }
       }
     });
   }, [selectedFeatureId]);
 
-  // Afficher skeleton pendant le chargement
+  // ─── Rendu ────────────────────────────────────────────────────────────────
   if (loading) {
     return <SkeletonMap />;
   }
@@ -182,7 +182,7 @@ export default function MapView({
         ref={mapContainerRef}
         className="w-full h-full rounded-xl overflow-hidden border-2 border-gray-200 dark:border-gray-800 shadow-2xl"
       />
-      
+
       {!geoData && !loading && mapReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-100/80 dark:bg-gray-900/80 rounded-xl backdrop-blur-sm pointer-events-none">
           <div className="text-center p-8">
@@ -197,11 +197,9 @@ export default function MapView({
       )}
 
       <style jsx global>{`
-        /* Optimisations CSS pour performance */
         .leaflet-container {
           font-family: inherit;
         }
-        
         .map-tooltip {
           background: rgba(255, 255, 255, 0.95) !important;
           border: 2px solid #22c55e !important;
@@ -213,30 +211,23 @@ export default function MapView({
           backdrop-filter: blur(4px) !important;
           pointer-events: none !important;
         }
-        
         .dark .map-tooltip {
           background: rgba(31, 41, 55, 0.95) !important;
           border-color: #16a34a !important;
           color: white !important;
         }
-        
-        /* Supprimer les attributions pour gagner de l'espace */
         .leaflet-control-attribution {
           font-size: 10px !important;
           background: rgba(255, 255, 255, 0.7) !important;
           padding: 2px 5px !important;
         }
-        
         .dark .leaflet-control-attribution {
           background: rgba(0, 0, 0, 0.5) !important;
           color: rgba(255, 255, 255, 0.7) !important;
         }
-        
-        /* Optimiser les transitions */
         .leaflet-tile {
           will-change: opacity;
         }
-        
         .leaflet-zoom-anim .leaflet-zoom-animated {
           will-change: transform;
         }

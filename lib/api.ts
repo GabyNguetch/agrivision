@@ -1,4 +1,4 @@
-// Service API avec logging détaillé
+// Service API avec cache en mémoire
 import type {
   Region,
   Departement,
@@ -15,68 +15,85 @@ import type {
 
 const API_BASE_URL = 'https://apiti.onrender.com';
 
-// Fonction de logging
-const logApiCall = (endpoint: string, method: string = 'GET', response?: any, error?: any) => {
-  const timestamp = new Date().toISOString();
-  const url = `${API_BASE_URL}${endpoint}`;
-  
-  console.group(`%c[API Call] ${method} ${endpoint}`, 'color: #22c55e; font-weight: bold');
-  console.log('🕐 Timestamp:', timestamp);
-  console.log('🔗 URL:', url);
-  console.log('📋 Method:', method);
-  
-  if (response) {
-    console.log('✅ Response:', response);
-  }
-  
-  if (error) {
-    console.error('❌ Error:', error);
-  }
-  
-  console.groupEnd();
-};
+// ─── Cache en mémoire ─────────────────────────────────────────────────────────
+// TTL = 5 minutes. Les données géographiques et les listes de référence
+// (filières, catégories, produits) ne changent pas fréquemment :
+// on les cache pour éviter des allers-retours réseau inutiles.
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes en ms
 
-// Fonction générique pour les appels API
-async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const cache = new Map<string, CacheEntry<any>>();
+
+function getFromCache<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > CACHE_TTL) {
+    cache.delete(key); // expiré
+    return null;
+  }
+  return entry.data as T;
+}
+
+function setInCache<T>(key: string, data: T): void {
+  cache.set(key, { data, timestamp: Date.now() });
+}
+
+// ─── Fonction générique avec cache optionnel ─────────────────────────────────
+async function fetchAPI<T>(endpoint: string, options?: RequestInit & { useCache?: boolean }): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
-  
+  const useCache = options?.useCache ?? false;
+
+  // Vérifier le cache d'abord
+  if (useCache) {
+    const cached = getFromCache<T>(endpoint);
+    if (cached) return cached;
+  }
+
   try {
+    const { useCache: _, ...fetchOptions } = options || {};
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       headers: {
         'Content-Type': 'application/json',
-        ...options?.headers,
+        ...fetchOptions?.headers,
       },
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      logApiCall(endpoint, options?.method || 'GET', null, { status: response.status, message: errorText });
       throw new Error(`API Error: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json();
-    logApiCall(endpoint, options?.method || 'GET', data);
-    
+
+    // Stocker dans le cache si demandé
+    if (useCache) {
+      setInCache(endpoint, data);
+    }
+
     return data;
   } catch (error) {
-    logApiCall(endpoint, options?.method || 'GET', null, error);
+    console.error(`[API] Erreur sur ${endpoint}:`, error);
     throw error;
   }
 }
 
-// ========== RÉGIONS ==========
+// ─── RÉGIONS ──────────────────────────────────────────────────────────────────
 export const getRegions = (skip: number = 0, limit: number = 100) =>
-  fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`);
+  fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`, { useCache: true });
 
 export const searchRegions = (query: string, limit: number = 10) =>
   fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 
 export const getRegion = (regionId: number) =>
-  fetchAPI<Region>(`/api/v1/regions/${regionId}`);
+  fetchAPI<Region>(`/api/v1/regions/${regionId}`, { useCache: true });
 
 export const getRegionDepartements = (regionId: number) =>
-  fetchAPI<Departement[]>(`/api/v1/regions/${regionId}/departements`);
+  fetchAPI<Departement[]>(`/api/v1/regions/${regionId}/departements`, { useCache: true });
 
 export const getRegionProductions = (
   regionId: number,
@@ -90,21 +107,21 @@ export const getRegionProductions = (
   return fetchAPI<Production[]>(url);
 };
 
-// ========== DÉPARTEMENTS ==========
+// ─── DÉPARTEMENTS ────────────────────────────────────────────────────────────
 export const getDepartements = (skip: number = 0, limit: number = 100, regionId?: number) => {
   let url = `/api/v1/departements/?skip=${skip}&limit=${limit}`;
   if (regionId) url += `&region_id=${regionId}`;
-  return fetchAPI<ApiResponse<Departement>>(url);
+  return fetchAPI<ApiResponse<Departement>>(url, { useCache: true });
 };
 
 export const searchDepartements = (query: string, limit: number = 10) =>
   fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 
 export const getDepartement = (departementId: number) =>
-  fetchAPI<Departement>(`/api/v1/departements/${departementId}`);
+  fetchAPI<Departement>(`/api/v1/departements/${departementId}`, { useCache: true });
 
 export const getDepartementCommunes = (departementId: number) =>
-  fetchAPI<Commune[]>(`/api/v1/departements/${departementId}/communes`);
+  fetchAPI<Commune[]>(`/api/v1/departements/${departementId}/communes`, { useCache: true });
 
 export const getDepartementProductions = (
   departementId: number,
@@ -118,7 +135,7 @@ export const getDepartementProductions = (
   return fetchAPI<Production[]>(url);
 };
 
-// ========== COMMUNES ==========
+// ─── COMMUNES ─────────────────────────────────────────────────────────────────
 export const getCommunes = (
   skip: number = 0,
   limit: number = 100,
@@ -128,7 +145,7 @@ export const getCommunes = (
   let url = `/api/v1/communes/?skip=${skip}&limit=${limit}`;
   if (departementId) url += `&departement_id=${departementId}`;
   if (typeCommune) url += `&type_commune=${typeCommune}`;
-  return fetchAPI<ApiResponse<Commune>>(url);
+  return fetchAPI<ApiResponse<Commune>>(url, { useCache: true });
 };
 
 export const searchCommunes = (query: string, limit: number = 10, departementId?: number) => {
@@ -138,10 +155,10 @@ export const searchCommunes = (query: string, limit: number = 10, departementId?
 };
 
 export const getCommune = (communeId: number) =>
-  fetchAPI<Commune>(`/api/v1/communes/${communeId}`);
+  fetchAPI<Commune>(`/api/v1/communes/${communeId}`, { useCache: true });
 
 export const getCommuneInfrastructures = (communeId: number) =>
-  fetchAPI<Infrastructure[]>(`/api/v1/communes/${communeId}/infrastructures`);
+  fetchAPI<Infrastructure[]>(`/api/v1/communes/${communeId}/infrastructures`, { useCache: true });
 
 export const getCommuneProductions = (
   communeId: number,
@@ -156,38 +173,38 @@ export const getCommuneProductions = (
 };
 
 export const getCommuneResume = (communeId: number) =>
-  fetchAPI<any>(`/api/v1/communes/${communeId}/resume`);
+  fetchAPI<any>(`/api/v1/communes/${communeId}/resume`, { useCache: true });
 
-// ========== FILIÈRES ==========
+// ─── FILIÈRES ─────────────────────────────────────────────────────────────────
 export const getFilieres = (skip: number = 0, limit: number = 100) =>
-  fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`);
+  fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`, { useCache: true });
 
 export const searchFilieres = (query: string, limit: number = 10) =>
   fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 
 export const getFiliere = (filiereId: number) =>
-  fetchAPI<Filiere>(`/api/v1/filieres/${filiereId}`);
+  fetchAPI<Filiere>(`/api/v1/filieres/${filiereId}`, { useCache: true });
 
 export const getFiliereCategories = (filiereId: number) =>
-  fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${filiereId}/categories`);
+  fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${filiereId}/categories`, { useCache: true });
 
 export const getFiliereProduits = (filiereId: number) =>
-  fetchAPI<Produit[]>(`/api/v1/filieres/${filiereId}/produits`);
+  fetchAPI<Produit[]>(`/api/v1/filieres/${filiereId}/produits`, { useCache: true });
 
-// ========== CATÉGORIES ==========
+// ─── CATÉGORIES ───────────────────────────────────────────────────────────────
 export const getCategories = (skip: number = 0, limit: number = 100, filiereId?: number) => {
   let url = `/api/v1/categories/?skip=${skip}&limit=${limit}`;
   if (filiereId) url += `&filiere_id=${filiereId}`;
-  return fetchAPI<ApiResponse<CategorieProduit>>(url);
+  return fetchAPI<ApiResponse<CategorieProduit>>(url, { useCache: true });
 };
 
 export const getCategorie = (categorieId: number) =>
-  fetchAPI<CategorieProduit>(`/api/v1/categories/${categorieId}`);
+  fetchAPI<CategorieProduit>(`/api/v1/categories/${categorieId}`, { useCache: true });
 
 export const getCategorieProduits = (categorieId: number) =>
-  fetchAPI<Produit[]>(`/api/v1/categories/${categorieId}/produits`);
+  fetchAPI<Produit[]>(`/api/v1/categories/${categorieId}/produits`, { useCache: true });
 
-// ========== PRODUITS ==========
+// ─── PRODUITS ─────────────────────────────────────────────────────────────────
 export const getProduits = (
   skip: number = 0,
   limit: number = 100,
@@ -197,7 +214,7 @@ export const getProduits = (
   let url = `/api/v1/produits/?skip=${skip}&limit=${limit}`;
   if (categorieId) url += `&categorie_id=${categorieId}`;
   if (filiereId) url += `&filiere_id=${filiereId}`;
-  return fetchAPI<ApiResponse<Produit>>(url);
+  return fetchAPI<ApiResponse<Produit>>(url, { useCache: true });
 };
 
 export const searchProduits = (
@@ -213,7 +230,7 @@ export const searchProduits = (
 };
 
 export const getProduit = (produitId: number) =>
-  fetchAPI<Produit>(`/api/v1/produits/${produitId}`);
+  fetchAPI<Produit>(`/api/v1/produits/${produitId}`, { useCache: true });
 
 export const getProduitResume = (produitId: number, annee?: number) => {
   let url = `/api/v1/produits/${produitId}/resume`;
@@ -221,7 +238,7 @@ export const getProduitResume = (produitId: number, annee?: number) => {
   return fetchAPI<any>(url);
 };
 
-// ========== PRODUCTIONS ==========
+// ─── PRODUCTIONS ──────────────────────────────────────────────────────────────
 export const getProductions = (params: {
   skip?: number;
   limit?: number;
@@ -246,10 +263,10 @@ export const getProductions = (params: {
 };
 
 export const getAnneesDisponibles = () =>
-  fetchAPI<number[]>(`/api/v1/productions/annees`);
+  fetchAPI<number[]>(`/api/v1/productions/annees`, { useCache: true });
 
 export const getSaisonsDisponibles = () =>
-  fetchAPI<string[]>(`/api/v1/productions/saisons`);
+  fetchAPI<string[]>(`/api/v1/productions/saisons`, { useCache: true });
 
 export const getProductionsParAnnee = (
   produitId?: number,
@@ -285,9 +302,9 @@ export const getProductionsParProduit = (annee?: number, regionId?: number) => {
   return fetchAPI<any>(url);
 };
 
-// ========== STATISTIQUES ==========
+// ─── STATISTIQUES ─────────────────────────────────────────────────────────────
 export const getStatistiquesGlobales = () =>
-  fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`);
+  fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`, { useCache: true });
 
 export const getStatistiquesProduction = (annee?: number) => {
   let url = `/api/v1/statistiques/production`;
@@ -325,20 +342,20 @@ export const getTopProduits = (annee?: number, regionId?: number, limit: number 
   return fetchAPI<any>(url);
 };
 
-// ========== GEOJSON ==========
+// ─── GEOJSON (toujours cacné — données géographiques stables) ────────────────
 export const getRegionsGeoJSON = () =>
-  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`);
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`, { useCache: true });
 
 export const getDepartementsGeoJSON = (regionId?: number) => {
   let url = `/api/v1/geojson/departements`;
   if (regionId) url += `?region_id=${regionId}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
+  return fetchAPI<GeoJSONFeatureCollection>(url, { useCache: true });
 };
 
 export const getCommunesGeoJSON = (departementId?: number) => {
   let url = `/api/v1/geojson/communes`;
   if (departementId) url += `?departement_id=${departementId}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
+  return fetchAPI<GeoJSONFeatureCollection>(url, { useCache: true });
 };
 
 export const getInfrastructuresGeoJSON = (typeInfrastructure?: string, communeId?: number) => {
@@ -347,5 +364,5 @@ export const getInfrastructuresGeoJSON = (typeInfrastructure?: string, communeId
   if (typeInfrastructure) params.append('type_infrastructure', typeInfrastructure);
   if (communeId) params.append('commune_id', String(communeId));
   if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
+  return fetchAPI<GeoJSONFeatureCollection>(url, { useCache: true });
 };

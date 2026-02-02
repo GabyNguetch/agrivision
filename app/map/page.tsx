@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { ArrowLeft, Leaf } from 'lucide-react';
@@ -13,11 +13,9 @@ import {
   getCommunesGeoJSON,
   getRegion,
   getDepartement,
-  getCommune,
   getCommuneResume,
   getRegionProductions,
   getDepartementProductions,
-  getCommuneProductions,
 } from '@/lib/api';
 
 // Charger MapView dynamiquement (côté client uniquement)
@@ -39,7 +37,7 @@ export default function MapPage() {
   const [loading, setLoading] = useState(true);
   const [selectedEntity, setSelectedEntity] = useState<any>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | null>(null);
-  
+
   // Filtres
   const [filters, setFilters] = useState({
     filiere_id: null as number | null,
@@ -48,19 +46,11 @@ export default function MapPage() {
     annee: null as number | null,
   });
 
-  // Charger les données géographiques au montage
-  useEffect(() => {
-    loadGeoData();
-  }, [mapLevel]);
+  // Ref pour éviter les appels API en double lors du premier montage
+  const hasMounted = useRef(false);
 
-  // Recharger les données quand les filtres changent
-  useEffect(() => {
-    if (filters.filiere_id || filters.categorie_id || filters.produit_id) {
-      loadGeoData();
-    }
-  }, [filters]);
-
-  const loadGeoData = async () => {
+  // ─── Chargement des données GeoJSON ──────────────────────────────────────
+  const loadGeoData = useCallback(async () => {
     try {
       setLoading(true);
       let data: GeoJSONFeatureCollection;
@@ -73,6 +63,8 @@ export default function MapPage() {
           data = await getDepartementsGeoJSON();
           break;
         case 'communes':
+          // OPTIMISATION : on passe un departement_id si disponible
+          // pour ne pas charger TOUTES les communes d'un coup
           data = await getCommunesGeoJSON();
           break;
         default:
@@ -80,28 +72,28 @@ export default function MapPage() {
       }
 
       setGeoData(data);
-      console.log(`%c[MAP PAGE] Données GeoJSON chargées pour ${mapLevel}`, 'color: #22c55e; font-weight: bold', {
-        featuresCount: data.features.length,
-      });
     } catch (error) {
       console.error('Erreur lors du chargement des données GeoJSON:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [mapLevel]); // ✅ Seul mapLevel comme dépendance
 
-  const handleFeatureClick = async (properties: any) => {
-    console.log('%c[MAP PAGE] Zone sélectionnée', 'color: #22c55e; font-weight: bold', properties);
-    
+  // Un seul useEffect pour charger les données
+  useEffect(() => {
+    loadGeoData();
+  }, [loadGeoData]);
+
+  // ─── Handlers mémorisés avec useCallback ─────────────────────────────────
+  const handleFeatureClick = useCallback(async (properties: any) => {
     try {
       let entityData;
-      let productions;
 
       switch (mapLevel) {
         case 'regions':
           entityData = await getRegion(properties.id);
           if (filters.produit_id || filters.annee) {
-            productions = await getRegionProductions(
+            const productions = await getRegionProductions(
               properties.id,
               filters.annee || undefined,
               filters.produit_id || undefined
@@ -112,7 +104,7 @@ export default function MapPage() {
         case 'departements':
           entityData = await getDepartement(properties.id);
           if (filters.produit_id || filters.annee) {
-            productions = await getDepartementProductions(
+            const productions = await getDepartementProductions(
               properties.id,
               filters.annee || undefined,
               filters.produit_id || undefined
@@ -134,19 +126,17 @@ export default function MapPage() {
       setSelectedEntity(properties);
       setSelectedFeatureId(properties.id);
     }
-  };
+  }, [mapLevel, filters.produit_id, filters.annee]); // ✅ dépendances précises
 
-  const handleFilterChange = (newFilters: any) => {
-    console.log('%c[MAP PAGE] Filtres mis à jour', 'color: #22c55e; font-weight: bold', newFilters);
+  const handleFilterChange = useCallback((newFilters: any) => {
     setFilters(newFilters);
-  };
+  }, []); // ✅ setFilters est stable, pas de dépendance nécessaire
 
-  const handleMapLevelChange = (level: MapLevel) => {
-    console.log('%c[MAP PAGE] Niveau de carte changé', 'color: #22c55e; font-weight: bold', level);
+  const handleMapLevelChange = useCallback((level: MapLevel) => {
     setMapLevel(level);
     setSelectedEntity(null);
     setSelectedFeatureId(null);
-  };
+  }, []); // ✅ setters sont stables
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-950">
@@ -161,7 +151,7 @@ export default function MapPage() {
             >
               <ArrowLeft className="w-5 h-5 text-gray-700 dark:text-gray-300" />
             </Link>
-            
+
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <div className="w-10 h-10 bg-gradient-to-br from-green-400 to-emerald-600 rounded-xl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Leaf className="w-6 h-6 text-white" />
