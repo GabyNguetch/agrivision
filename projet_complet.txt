@@ -530,7 +530,10 @@ export default function HomePage() {
 FICHIER: D:\5GI\Projet-TI\webmap\app\globals.css
 ================================================================================
 
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 
 @layer base {
   :root {
@@ -699,5 +702,3866 @@ export default function NotFound() {
     </div>
   );
 }
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\components\MapView.tsx
+================================================================================
+
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
+import { SkeletonMap } from './Skeleton';
+
+interface MapViewProps {
+  geoData: GeoJSONFeatureCollection | null;
+  loading: boolean;
+  mapLevel: MapLevel;
+  onFeatureClick?: (properties: any) => void;
+  selectedFeatureId?: number | null;
+}
+
+export default function MapView({
+  geoData,
+  loading,
+  mapLevel,
+  onFeatureClick,
+  selectedFeatureId,
+}: MapViewProps) {
+  const mapRef = useRef<L.Map | null>(null);
+  const geoJsonLayerRef = useRef<L.GeoJSON | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  // Initialiser la carte immédiatement au montage
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    try {
+      // Configuration optimisée pour un chargement rapide
+      const map = L.map(mapContainerRef.current, {
+        center: [7.3697, 12.3547],
+        zoom: 6,
+        zoomControl: false,
+        preferCanvas: true, // Utiliser Canvas au lieu de SVG (plus rapide)
+        fadeAnimation: false, // Désactiver les animations de fade
+        zoomAnimation: true,
+        markerZoomAnimation: false,
+      });
+
+      // Ajouter le contrôle de zoom
+      L.control.zoom({ position: 'topright' }).addTo(map);
+
+      // Tuiles optimisées avec cache
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19,
+        minZoom: 5,
+        updateWhenIdle: true, // Mettre à jour uniquement quand l'utilisateur arrête de zoomer
+        updateWhenZooming: false, // Ne pas mettre à jour pendant le zoom
+        keepBuffer: 2, // Garder plus de tuiles en cache
+      }).addTo(map);
+
+      mapRef.current = map;
+      setMapReady(true);
+
+      console.log('%c[MAP] ⚡ Carte initialisée rapidement', 'color: #22c55e; font-weight: bold');
+    } catch (error) {
+      console.error('[MAP] Erreur:', error);
+    }
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        setMapReady(false);
+      }
+    };
+  }, []);
+
+  // Mettre à jour les données GeoJSON avec optimisations
+  useEffect(() => {
+    if (!mapRef.current || !mapReady || !geoData) return;
+
+    // Supprimer l'ancienne couche
+    if (geoJsonLayerRef.current) {
+      mapRef.current.removeLayer(geoJsonLayerRef.current);
+    }
+
+    console.log('%c[MAP] 📍 Chargement GeoJSON', 'color: #3b82f6', {
+      features: geoData.features.length,
+    });
+
+    // Style optimisé (fonction simple)
+    const getStyle = (feature: any) => {
+      const isSelected = feature?.properties?.id === selectedFeatureId;
+      return {
+        fillColor: isSelected ? '#22c55e' : '#86efac',
+        weight: isSelected ? 3 : 1,
+        opacity: 1,
+        color: isSelected ? '#15803d' : '#16a34a',
+        fillOpacity: isSelected ? 0.7 : 0.5,
+      };
+    };
+
+    // Créer la couche GeoJSON avec options de performance
+    const geoJsonLayer = L.geoJSON(geoData, {
+      style: getStyle,
+      // Utiliser onEachFeature de manière optimisée
+      onEachFeature: (feature, layer) => {
+        const props = feature.properties;
+        if (!props) return;
+
+        const name = props.nom || props.name || 'Sans nom';
+
+        // Tooltip léger
+        layer.bindTooltip(name, {
+          permanent: false,
+          direction: 'center',
+          className: 'map-tooltip',
+          opacity: 0.9,
+        });
+
+        // Events optimisés
+        layer.on('click', () => {
+          if (onFeatureClick) {
+            onFeatureClick(props);
+          }
+        });
+
+        // Hover effects légers
+        if (props.id !== selectedFeatureId) {
+          layer.on('mouseover', function() {
+            this.setStyle({ fillOpacity: 0.7, weight: 2 });
+          });
+          layer.on('mouseout', function() {
+            this.setStyle({ fillOpacity: 0.5, weight: 1 });
+          });
+        }
+      },
+    });
+
+    geoJsonLayer.addTo(mapRef.current);
+    geoJsonLayerRef.current = geoJsonLayer;
+
+    // Ajuster la vue rapidement
+    try {
+      const bounds = geoJsonLayer.getBounds();
+      if (bounds.isValid()) {
+        mapRef.current.fitBounds(bounds, { 
+          padding: [50, 50],
+          animate: false, // Pas d'animation pour un ajustement instantané
+        });
+      }
+    } catch (error) {
+      console.error('[MAP] Erreur bounds:', error);
+    }
+  }, [geoData, mapReady, selectedFeatureId, mapLevel, onFeatureClick]);
+
+  // Zoom optimisé sur sélection
+  useEffect(() => {
+    if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
+
+    geoJsonLayerRef.current.eachLayer((layer: any) => {
+      const feature = layer.feature;
+      if (feature?.properties?.id === selectedFeatureId) {
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) {
+          mapRef.current!.fitBounds(bounds, { 
+            padding: [100, 100],
+            maxZoom: 10,
+            animate: true, // Animation seulement pour le zoom utilisateur
+            duration: 0.5,
+          });
+        }
+      }
+    });
+  }, [selectedFeatureId]);
+
+  // Afficher skeleton pendant le chargement
+  if (loading) {
+    return <SkeletonMap />;
+  }
+
+  return (
+    <div className="relative w-full h-full">
+      <div
+        ref={mapContainerRef}
+        className="w-full h-full rounded-xl overflow-hidden border-2 border-gray-200 dark:border-gray-800 shadow-2xl"
+      />
+      
+      {!geoData && !loading && mapReady && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100/80 dark:bg-gray-900/80 rounded-xl backdrop-blur-sm pointer-events-none">
+          <div className="text-center p-8">
+            <svg className="mx-auto h-16 w-16 text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+            </svg>
+            <p className="text-gray-600 dark:text-gray-400 text-lg font-medium">
+              Sélectionnez des filtres pour afficher les données
+            </p>
+          </div>
+        </div>
+      )}
+
+      <style jsx global>{`
+        /* Optimisations CSS pour performance */
+        .leaflet-container {
+          font-family: inherit;
+        }
+        
+        .map-tooltip {
+          background: rgba(255, 255, 255, 0.95) !important;
+          border: 2px solid #22c55e !important;
+          border-radius: 8px !important;
+          padding: 6px 10px !important;
+          font-weight: 600 !important;
+          font-size: 13px !important;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+          backdrop-filter: blur(4px) !important;
+          pointer-events: none !important;
+        }
+        
+        .dark .map-tooltip {
+          background: rgba(31, 41, 55, 0.95) !important;
+          border-color: #16a34a !important;
+          color: white !important;
+        }
+        
+        /* Supprimer les attributions pour gagner de l'espace */
+        .leaflet-control-attribution {
+          font-size: 10px !important;
+          background: rgba(255, 255, 255, 0.7) !important;
+          padding: 2px 5px !important;
+        }
+        
+        .dark .leaflet-control-attribution {
+          background: rgba(0, 0, 0, 0.5) !important;
+          color: rgba(255, 255, 255, 0.7) !important;
+        }
+        
+        /* Optimiser les transitions */
+        .leaflet-tile {
+          will-change: opacity;
+        }
+        
+        .leaflet-zoom-anim .leaflet-zoom-animated {
+          will-change: transform;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\components\Sidebar.tsx
+================================================================================
+
+'use client';
+
+import { useState, useEffect } from 'react';
+import {
+  Search,
+  Filter,
+  MapPin,
+  Layers,
+  TrendingUp,
+  X,
+  ChevronDown,
+  ChevronRight,
+  Wheat,
+  Package,
+  Calendar,
+} from 'lucide-react';
+import type {
+  Filiere,
+  CategorieProduit,
+  Produit,
+  Region,
+  Departement,
+  Commune,
+  MapLevel,
+} from '@/types/api';
+import {
+  getFilieres,
+  getCategories,
+  getProduits,
+  searchFilieres,
+  searchProduits,
+  getRegions,
+  getDepartements,
+  getCommunes,
+  getAnneesDisponibles,
+} from '@/lib/api';
+import { SkeletonList } from './Skeleton';
+
+interface SidebarProps {
+  onFilterChange: (filters: any) => void;
+  onMapLevelChange: (level: MapLevel) => void;
+  selectedEntity: any;
+  currentMapLevel: MapLevel;
+}
+
+export default function Sidebar({
+  onFilterChange,
+  onMapLevelChange,
+  selectedEntity,
+  currentMapLevel,
+}: SidebarProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<'filters' | 'info'>('filters');
+  
+  // États pour les filtres
+  const [filieres, setFilieres] = useState<Filiere[]>([]);
+  const [categories, setCategories] = useState<CategorieProduit[]>([]);
+  const [produits, setProduits] = useState<Produit[]>([]);
+  const [annees, setAnnees] = useState<number[]>([]);
+  
+  // Sélections
+  const [selectedFiliere, setSelectedFiliere] = useState<number | null>(null);
+  const [selectedCategorie, setSelectedCategorie] = useState<number | null>(null);
+  const [selectedProduit, setSelectedProduit] = useState<number | null>(null);
+  const [selectedAnnee, setSelectedAnnee] = useState<number | null>(null);
+  
+  // Sections ouvertes/fermées
+  const [openSections, setOpenSections] = useState({
+    filieres: true,
+    categories: false,
+    produits: false,
+    mapLevel: false,
+    annee: false,
+  });
+  
+  const [loading, setLoading] = useState(false);
+
+  // Charger les filières au montage
+  useEffect(() => {
+    loadFilieres();
+    loadAnnees();
+  }, []);
+
+  // Charger les catégories quand une filière est sélectionnée
+  useEffect(() => {
+    if (selectedFiliere) {
+      loadCategories(selectedFiliere);
+      setOpenSections((prev) => ({ ...prev, categories: true }));
+    } else {
+      setCategories([]);
+      setSelectedCategorie(null);
+    }
+  }, [selectedFiliere]);
+
+  // Charger les produits quand une catégorie est sélectionnée
+  useEffect(() => {
+    if (selectedCategorie) {
+      loadProduits(selectedCategorie, selectedFiliere);
+      setOpenSections((prev) => ({ ...prev, produits: true }));
+    } else if (selectedFiliere) {
+      loadProduits(undefined, selectedFiliere);
+    } else {
+      setProduits([]);
+      setSelectedProduit(null);
+    }
+  }, [selectedCategorie, selectedFiliere]);
+
+  // Notifier les changements de filtre
+  useEffect(() => {
+    onFilterChange({
+      filiere_id: selectedFiliere,
+      categorie_id: selectedCategorie,
+      produit_id: selectedProduit,
+      annee: selectedAnnee,
+    });
+  }, [selectedFiliere, selectedCategorie, selectedProduit, selectedAnnee]);
+
+  const loadFilieres = async () => {
+    try {
+      setLoading(true);
+      const response = await getFilieres(0, 100);
+      setFilieres(response.items);
+    } catch (error) {
+      console.error('Erreur lors du chargement des filières:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadCategories = async (filiereId: number) => {
+    try {
+      const response = await getCategories(0, 100, filiereId);
+      setCategories(response.items);
+    } catch (error) {
+      console.error('Erreur lors du chargement des catégories:', error);
+    }
+  };
+
+  const loadProduits = async (categorieId?: number, filiereId?: number) => {
+    try {
+      const response = await getProduits(0, 100, categorieId, filiereId);
+      setProduits(response.items);
+    } catch (error) {
+      console.error('Erreur lors du chargement des produits:', error);
+    }
+  };
+
+  const loadAnnees = async () => {
+    try {
+      const data = await getAnneesDisponibles();
+      setAnnees(data);
+    } catch (error) {
+      console.error('Erreur lors du chargement des années:', error);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (searchQuery.trim().length < 2) return;
+
+    try {
+      setLoading(true);
+      const results = await searchFilieres(searchQuery, 10);
+      setFilieres(results);
+    } catch (error) {
+      console.error('Erreur lors de la recherche:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleSection = (section: keyof typeof openSections) => {
+    setOpenSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const resetFilters = () => {
+    setSelectedFiliere(null);
+    setSelectedCategorie(null);
+    setSelectedProduit(null);
+    setSelectedAnnee(null);
+    setSearchQuery('');
+    loadFilieres();
+  };
+
+  const mapLevelOptions = [
+    { value: 'regions' as MapLevel, label: 'Régions', icon: MapPin },
+    { value: 'departements' as MapLevel, label: 'Départements', icon: Layers },
+    { value: 'communes' as MapLevel, label: 'Communes', icon: TrendingUp },
+  ];
+
+  return (
+    <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800" style={{ animation: 'slideRight 0.5s ease-out' }}>
+      {/* Header */}
+      <div className="p-6 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-primary-50 to-white dark:from-gray-900 dark:to-gray-950">
+        <h2 className="text-2xl font-display font-bold text-gray-900 dark:text-white mb-2">
+          Filtres & Recherche
+        </h2>
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Explorez les données agricoles du Cameroun
+        </p>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 dark:border-gray-800">
+        <button
+          onClick={() => setActiveTab('filters')}
+          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
+            activeTab === 'filters'
+              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+          }`}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+        >
+          <Filter className="w-4 h-4" />
+          Filtres
+        </button>
+        <button
+          onClick={() => setActiveTab('info')}
+          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
+            activeTab === 'info'
+              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+          }`}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+        >
+          <MapPin className="w-4 h-4" />
+          Informations
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-6">
+        {activeTab === 'filters' ? (
+          <>
+            {/* Barre de recherche */}
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Search className="w-4 h-4" />
+                Recherche rapide
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  placeholder="Rechercher une filière..."
+                  className="w-full px-4 py-3 pr-10 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-500 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                  style={{ animation: 'fadeIn 0.5s ease-in-out' }}
+                />
+                <button
+                  onClick={handleSearch}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-gray-800 rounded-lg transition-all"
+                >
+                  <Search className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Niveau de carte */}
+            <div className="space-y-3">
+              <button
+                onClick={() => toggleSection('mapLevel')}
+                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Layers className="w-4 h-4" />
+                  Niveau de visualisation
+                </span>
+                {openSections.mapLevel ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              </button>
+              
+              {openSections.mapLevel && (
+                <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                  {mapLevelOptions.map((option) => {
+                    const Icon = option.icon;
+                    return (
+                      <button
+                        key={option.value}
+                        onClick={() => onMapLevelChange(option.value)}
+                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
+                          currentMapLevel === option.value
+                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
+                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
+                        }`}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', width: '100%' }}
+                      >
+                        <Icon className="w-5 h-5" />
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Filières */}
+            <div className="space-y-3">
+              <button
+                onClick={() => toggleSection('filieres')}
+                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Wheat className="w-4 h-4" />
+                  Filières ({filieres.length})
+                </span>
+                {openSections.filieres ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              </button>
+              
+              {openSections.filieres && (
+                <div className="space-y-2" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                  {loading ? (
+                    <SkeletonList count={3} />
+                  ) : (
+                    filieres.map((filiere) => (
+                      <button
+                        key={filiere.id}
+                        onClick={() => setSelectedFiliere(filiere.id === selectedFiliere ? null : filiere.id)}
+                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
+                          selectedFiliere === filiere.id
+                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
+                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
+                        }`}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: filiere.couleur || '#22c55e', flexShrink: 0 }}
+                          />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="font-medium truncate">{filiere.nom}</div>
+                            {filiere.description && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {filiere.description}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Catégories */}
+            {selectedFiliere && categories.length > 0 && (
+              <div className="space-y-3">
+                <button
+                  onClick={() => toggleSection('categories')}
+                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Package className="w-4 h-4" />
+                    Catégories ({categories.length})
+                  </span>
+                  {openSections.categories ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                </button>
+                
+                {openSections.categories && (
+                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                    {categories.map((categorie) => (
+                      <button
+                        key={categorie.id}
+                        onClick={() => setSelectedCategorie(categorie.id === selectedCategorie ? null : categorie.id)}
+                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
+                          selectedCategorie === categorie.id
+                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
+                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
+                        }`}
+                      >
+                        {categorie.nom}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Produits */}
+            {produits.length > 0 && (
+              <div className="space-y-3">
+                <button
+                  onClick={() => toggleSection('produits')}
+                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Package className="w-4 h-4" />
+                    Produits ({produits.length})
+                  </span>
+                  {openSections.produits ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                </button>
+                
+                {openSections.produits && (
+                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                    {produits.slice(0, 10).map((produit) => (
+                      <button
+                        key={produit.id}
+                        onClick={() => setSelectedProduit(produit.id === selectedProduit ? null : produit.id)}
+                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
+                          selectedProduit === produit.id
+                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
+                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
+                        }`}
+                      >
+                        <div className="font-medium">{produit.nom}</div>
+                        {produit.unite_mesure && (
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            Unité: {produit.unite_mesure}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Année */}
+            <div className="space-y-3">
+              <button
+                onClick={() => toggleSection('annee')}
+                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Calendar className="w-4 h-4" />
+                  Année
+                </span>
+                {openSections.annee ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              </button>
+              
+              {openSections.annee && annees.length > 0 && (
+                <div className="pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
+                  <select
+                    value={selectedAnnee || ''}
+                    onChange={(e) => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
+                    className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                  >
+                    <option value="">Toutes les années</option>
+                    {annees.map((annee) => (
+                      <option key={annee} value={annee}>
+                        {annee}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Reset Button */}
+            <button
+              onClick={resetFilters}
+              className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-900 hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg font-medium transition-all transform hover:scale-105"
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+            >
+              <X className="w-5 h-5" />
+              Réinitialiser les filtres
+            </button>
+          </>
+        ) : (
+          <div className="space-y-4">
+            {selectedEntity ? (
+              <div className="bg-gradient-to-br from-primary-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-6 border-2 border-primary-200 dark:border-primary-800" style={{ animation: 'fadeIn 0.5s ease-in-out' }}>
+                <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white mb-4">
+                  {selectedEntity.nom || 'Information'}
+                </h3>
+                
+                <div className="space-y-3">
+                  {Object.entries(selectedEntity).map(([key, value]) => {
+                    if (key === 'id' || key === 'created_at' || key === 'updated_at' || !value) return null;
+                    
+                    return (
+                      <div key={key} className="border-b border-gray-200 dark:border-gray-800 pb-2">
+                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">
+                          {key.replace(/_/g, ' ')}
+                        </div>
+                        <div className="text-sm text-gray-900 dark:text-white">
+                          {Array.isArray(value) ? value.join(', ') : String(value)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-12">
+                <MapPin className="w-16 h-16 mx-auto text-gray-300 dark:text-gray-700 mb-4" />
+                <p className="text-gray-600 dark:text-gray-400">
+                  Cliquez sur une zone de la carte pour voir ses informations
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\components\Skeleton.tsx
+================================================================================
+
+'use client';
+
+import React from 'react';
+
+export const SkeletonCard = () => (
+  <div className="bg-white dark:bg-gray-900 rounded-xl p-4 border border-gray-200 dark:border-gray-800 animate-pulse">
+    <div className="h-6 bg-gray-200 dark:bg-gray-800 rounded w-3/4 mb-3 animate-shimmer"></div>
+    <div className="space-y-2">
+      <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded animate-shimmer"></div>
+      <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-5/6 animate-shimmer"></div>
+    </div>
+  </div>
+);
+
+export const SkeletonList = ({ count = 3 }: { count?: number }) => (
+  <div className="space-y-3">
+    {Array.from({ length: count }).map((_, i) => (
+      <SkeletonCard key={i} />
+    ))}
+  </div>
+);
+
+export const SkeletonMap = () => (
+  <div className="w-full h-full bg-gray-100 dark:bg-gray-900 animate-pulse flex items-center justify-center">
+    <div className="text-center">
+      <div className="inline-block w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+      <p className="text-gray-600 dark:text-gray-400 font-medium">Chargement de la carte...</p>
+    </div>
+  </div>
+);
+
+export const SkeletonStat = () => (
+  <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 animate-pulse">
+    <div className="flex items-center justify-between mb-3">
+      <div className="h-8 w-8 bg-gray-200 dark:bg-gray-800 rounded-lg animate-shimmer"></div>
+      <div className="h-4 w-16 bg-gray-200 dark:bg-gray-800 rounded animate-shimmer"></div>
+    </div>
+    <div className="h-8 bg-gray-200 dark:bg-gray-800 rounded w-24 mb-2 animate-shimmer"></div>
+    <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-32 animate-shimmer"></div>
+  </div>
+);
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\components\ThemeToggle.tsx
+================================================================================
+
+'use client';
+
+import { useEffect, useState } from 'react';
+import { Moon, Sun } from 'lucide-react';
+
+export default function ThemeToggle() {
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    // Détecter le thème du navigateur au chargement
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
+    const initialTheme = savedTheme || (isDark ? 'dark' : 'light');
+    
+    setTheme(initialTheme);
+    document.documentElement.classList.toggle('dark', initialTheme === 'dark');
+
+    // Écouter les changements de préférence du système
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = (e: MediaQueryListEvent) => {
+      if (!localStorage.getItem('theme')) {
+        const newTheme = e.matches ? 'dark' : 'light';
+        setTheme(newTheme);
+        document.documentElement.classList.toggle('dark', newTheme === 'dark');
+      }
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
+
+  const toggleTheme = () => {
+    const newTheme = theme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+    localStorage.setItem('theme', newTheme);
+    document.documentElement.classList.toggle('dark', newTheme === 'dark');
+  };
+
+  if (!mounted) {
+    return <div className="w-10 h-10" />;
+  }
+
+  return (
+    <button
+      onClick={toggleTheme}
+      className="p-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-300 transform hover:scale-110"
+      aria-label="Toggle theme"
+      style={{
+        animation: 'slideDown 0.5s ease-out',
+      }}
+    >
+      {theme === 'light' ? (
+        <Moon className="w-5 h-5 text-gray-700 dark:text-gray-300" />
+      ) : (
+        <Sun className="w-5 h-5 text-yellow-500" />
+      )}
+    </button>
+  );
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\lib\api.ts
+================================================================================
+
+// Service API avec logging détaillé
+import type {
+  Region,
+  Departement,
+  Commune,
+  Filiere,
+  CategorieProduit,
+  Produit,
+  Production,
+  Infrastructure,
+  ApiResponse,
+  GeoJSONFeatureCollection,
+  StatistiquesGlobales,
+} from '@/types/api';
+
+const API_BASE_URL = 'https://apiti.onrender.com';
+
+// Fonction de logging
+const logApiCall = (endpoint: string, method: string = 'GET', response?: any, error?: any) => {
+  const timestamp = new Date().toISOString();
+  const url = `${API_BASE_URL}${endpoint}`;
+  
+  console.group(`%c[API Call] ${method} ${endpoint}`, 'color: #22c55e; font-weight: bold');
+  console.log('🕐 Timestamp:', timestamp);
+  console.log('🔗 URL:', url);
+  console.log('📋 Method:', method);
+  
+  if (response) {
+    console.log('✅ Response:', response);
+  }
+  
+  if (error) {
+    console.error('❌ Error:', error);
+  }
+  
+  console.groupEnd();
+};
+
+// Fonction générique pour les appels API
+async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const url = `${API_BASE_URL}${endpoint}`;
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logApiCall(endpoint, options?.method || 'GET', null, { status: response.status, message: errorText });
+      throw new Error(`API Error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    logApiCall(endpoint, options?.method || 'GET', data);
+    
+    return data;
+  } catch (error) {
+    logApiCall(endpoint, options?.method || 'GET', null, error);
+    throw error;
+  }
+}
+
+// ========== RÉGIONS ==========
+export const getRegions = (skip: number = 0, limit: number = 100) =>
+  fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`);
+
+export const searchRegions = (query: string, limit: number = 10) =>
+  fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+
+export const getRegion = (regionId: number) =>
+  fetchAPI<Region>(`/api/v1/regions/${regionId}`);
+
+export const getRegionDepartements = (regionId: number) =>
+  fetchAPI<Departement[]>(`/api/v1/regions/${regionId}/departements`);
+
+export const getRegionProductions = (
+  regionId: number,
+  annee?: number,
+  produitId?: number,
+  limit: number = 100
+) => {
+  let url = `/api/v1/regions/${regionId}/productions?limit=${limit}`;
+  if (annee) url += `&annee=${annee}`;
+  if (produitId) url += `&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(url);
+};
+
+// ========== DÉPARTEMENTS ==========
+export const getDepartements = (skip: number = 0, limit: number = 100, regionId?: number) => {
+  let url = `/api/v1/departements/?skip=${skip}&limit=${limit}`;
+  if (regionId) url += `&region_id=${regionId}`;
+  return fetchAPI<ApiResponse<Departement>>(url);
+};
+
+export const searchDepartements = (query: string, limit: number = 10) =>
+  fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+
+export const getDepartement = (departementId: number) =>
+  fetchAPI<Departement>(`/api/v1/departements/${departementId}`);
+
+export const getDepartementCommunes = (departementId: number) =>
+  fetchAPI<Commune[]>(`/api/v1/departements/${departementId}/communes`);
+
+export const getDepartementProductions = (
+  departementId: number,
+  annee?: number,
+  produitId?: number,
+  limit: number = 100
+) => {
+  let url = `/api/v1/departements/${departementId}/productions?limit=${limit}`;
+  if (annee) url += `&annee=${annee}`;
+  if (produitId) url += `&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(url);
+};
+
+// ========== COMMUNES ==========
+export const getCommunes = (
+  skip: number = 0,
+  limit: number = 100,
+  departementId?: number,
+  typeCommune?: string
+) => {
+  let url = `/api/v1/communes/?skip=${skip}&limit=${limit}`;
+  if (departementId) url += `&departement_id=${departementId}`;
+  if (typeCommune) url += `&type_commune=${typeCommune}`;
+  return fetchAPI<ApiResponse<Commune>>(url);
+};
+
+export const searchCommunes = (query: string, limit: number = 10, departementId?: number) => {
+  let url = `/api/v1/communes/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+  if (departementId) url += `&departement_id=${departementId}`;
+  return fetchAPI<Commune[]>(url);
+};
+
+export const getCommune = (communeId: number) =>
+  fetchAPI<Commune>(`/api/v1/communes/${communeId}`);
+
+export const getCommuneInfrastructures = (communeId: number) =>
+  fetchAPI<Infrastructure[]>(`/api/v1/communes/${communeId}/infrastructures`);
+
+export const getCommuneProductions = (
+  communeId: number,
+  annee?: number,
+  produitId?: number,
+  limit: number = 100
+) => {
+  let url = `/api/v1/communes/${communeId}/productions?limit=${limit}`;
+  if (annee) url += `&annee=${annee}`;
+  if (produitId) url += `&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(url);
+};
+
+export const getCommuneResume = (communeId: number) =>
+  fetchAPI<any>(`/api/v1/communes/${communeId}/resume`);
+
+// ========== FILIÈRES ==========
+export const getFilieres = (skip: number = 0, limit: number = 100) =>
+  fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`);
+
+export const searchFilieres = (query: string, limit: number = 10) =>
+  fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+
+export const getFiliere = (filiereId: number) =>
+  fetchAPI<Filiere>(`/api/v1/filieres/${filiereId}`);
+
+export const getFiliereCategories = (filiereId: number) =>
+  fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${filiereId}/categories`);
+
+export const getFiliereProduits = (filiereId: number) =>
+  fetchAPI<Produit[]>(`/api/v1/filieres/${filiereId}/produits`);
+
+// ========== CATÉGORIES ==========
+export const getCategories = (skip: number = 0, limit: number = 100, filiereId?: number) => {
+  let url = `/api/v1/categories/?skip=${skip}&limit=${limit}`;
+  if (filiereId) url += `&filiere_id=${filiereId}`;
+  return fetchAPI<ApiResponse<CategorieProduit>>(url);
+};
+
+export const getCategorie = (categorieId: number) =>
+  fetchAPI<CategorieProduit>(`/api/v1/categories/${categorieId}`);
+
+export const getCategorieProduits = (categorieId: number) =>
+  fetchAPI<Produit[]>(`/api/v1/categories/${categorieId}/produits`);
+
+// ========== PRODUITS ==========
+export const getProduits = (
+  skip: number = 0,
+  limit: number = 100,
+  categorieId?: number,
+  filiereId?: number
+) => {
+  let url = `/api/v1/produits/?skip=${skip}&limit=${limit}`;
+  if (categorieId) url += `&categorie_id=${categorieId}`;
+  if (filiereId) url += `&filiere_id=${filiereId}`;
+  return fetchAPI<ApiResponse<Produit>>(url);
+};
+
+export const searchProduits = (
+  query: string,
+  limit: number = 10,
+  categorieId?: number,
+  filiereId?: number
+) => {
+  let url = `/api/v1/produits/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+  if (categorieId) url += `&categorie_id=${categorieId}`;
+  if (filiereId) url += `&filiere_id=${filiereId}`;
+  return fetchAPI<Produit[]>(url);
+};
+
+export const getProduit = (produitId: number) =>
+  fetchAPI<Produit>(`/api/v1/produits/${produitId}`);
+
+export const getProduitResume = (produitId: number, annee?: number) => {
+  let url = `/api/v1/produits/${produitId}/resume`;
+  if (annee) url += `?annee=${annee}`;
+  return fetchAPI<any>(url);
+};
+
+// ========== PRODUCTIONS ==========
+export const getProductions = (params: {
+  skip?: number;
+  limit?: number;
+  annee?: number;
+  annee_debut?: number;
+  annee_fin?: number;
+  produit_id?: number;
+  categorie_id?: number;
+  filiere_id?: number;
+  region_id?: number;
+  departement_id?: number;
+  commune_id?: number;
+  saison?: string;
+}) => {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
+    }
+  });
+  return fetchAPI<ApiResponse<Production>>(`/api/v1/productions/?${searchParams.toString()}`);
+};
+
+export const getAnneesDisponibles = () =>
+  fetchAPI<number[]>(`/api/v1/productions/annees`);
+
+export const getSaisonsDisponibles = () =>
+  fetchAPI<string[]>(`/api/v1/productions/saisons`);
+
+export const getProductionsParAnnee = (
+  produitId?: number,
+  regionId?: number,
+  anneeDebut?: number,
+  anneeFin?: number
+) => {
+  let url = `/api/v1/productions/par-annee`;
+  const params = new URLSearchParams();
+  if (produitId) params.append('produit_id', String(produitId));
+  if (regionId) params.append('region_id', String(regionId));
+  if (anneeDebut) params.append('annee_debut', String(anneeDebut));
+  if (anneeFin) params.append('annee_fin', String(anneeFin));
+  if (params.toString()) url += `?${params.toString()}`;
+  return fetchAPI<any>(url);
+};
+
+export const getProductionsParRegion = (annee?: number, produitId?: number) => {
+  let url = `/api/v1/productions/par-region`;
+  const params = new URLSearchParams();
+  if (annee) params.append('annee', String(annee));
+  if (produitId) params.append('produit_id', String(produitId));
+  if (params.toString()) url += `?${params.toString()}`;
+  return fetchAPI<any>(url);
+};
+
+export const getProductionsParProduit = (annee?: number, regionId?: number) => {
+  let url = `/api/v1/productions/par-produit`;
+  const params = new URLSearchParams();
+  if (annee) params.append('annee', String(annee));
+  if (regionId) params.append('region_id', String(regionId));
+  if (params.toString()) url += `?${params.toString()}`;
+  return fetchAPI<any>(url);
+};
+
+// ========== STATISTIQUES ==========
+export const getStatistiquesGlobales = () =>
+  fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`);
+
+export const getStatistiquesProduction = (annee?: number) => {
+  let url = `/api/v1/statistiques/production`;
+  if (annee) url += `?annee=${annee}`;
+  return fetchAPI<any>(url);
+};
+
+export const getEvolutionProduction = (
+  produitId?: number,
+  regionId?: number,
+  anneeDebut?: number,
+  anneeFin?: number
+) => {
+  let url = `/api/v1/statistiques/evolution`;
+  const params = new URLSearchParams();
+  if (produitId) params.append('produit_id', String(produitId));
+  if (regionId) params.append('region_id', String(regionId));
+  if (anneeDebut) params.append('annee_debut', String(anneeDebut));
+  if (anneeFin) params.append('annee_fin', String(anneeFin));
+  if (params.toString()) url += `?${params.toString()}`;
+  return fetchAPI<any>(url);
+};
+
+export const getTopRegions = (annee?: number, produitId?: number, limit: number = 10) => {
+  let url = `/api/v1/statistiques/top-regions?limit=${limit}`;
+  if (annee) url += `&annee=${annee}`;
+  if (produitId) url += `&produit_id=${produitId}`;
+  return fetchAPI<any>(url);
+};
+
+export const getTopProduits = (annee?: number, regionId?: number, limit: number = 10) => {
+  let url = `/api/v1/statistiques/top-produits?limit=${limit}`;
+  if (annee) url += `&annee=${annee}`;
+  if (regionId) url += `&region_id=${regionId}`;
+  return fetchAPI<any>(url);
+};
+
+// ========== GEOJSON ==========
+export const getRegionsGeoJSON = () =>
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`);
+
+export const getDepartementsGeoJSON = (regionId?: number) => {
+  let url = `/api/v1/geojson/departements`;
+  if (regionId) url += `?region_id=${regionId}`;
+  return fetchAPI<GeoJSONFeatureCollection>(url);
+};
+
+export const getCommunesGeoJSON = (departementId?: number) => {
+  let url = `/api/v1/geojson/communes`;
+  if (departementId) url += `?departement_id=${departementId}`;
+  return fetchAPI<GeoJSONFeatureCollection>(url);
+};
+
+export const getInfrastructuresGeoJSON = (typeInfrastructure?: string, communeId?: number) => {
+  let url = `/api/v1/geojson/infrastructures`;
+  const params = new URLSearchParams();
+  if (typeInfrastructure) params.append('type_infrastructure', typeInfrastructure);
+  if (communeId) params.append('commune_id', String(communeId));
+  if (params.toString()) url += `?${params.toString()}`;
+  return fetchAPI<GeoJSONFeatureCollection>(url);
+};
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\types\api.ts
+================================================================================
+
+// Types pour l'API Cameroun WebMapping
+
+export interface Region {
+  id: number;
+  nom: string;
+  code_region: string;
+  chef_lieu: string | null;
+  superficie_km2: number | null;
+  population: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Departement {
+  id: number;
+  nom: string;
+  code_departement: string;
+  chef_lieu: string | null;
+  superficie_km2: number | null;
+  population: number | null;
+  region_id: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Commune {
+  id: number;
+  nom: string;
+  code_commune: string;
+  departement_id: number;
+  type_commune: string | null;
+  population: number | null;
+  superficie_km2: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Filiere {
+  id: number;
+  nom: string;
+  code: string;
+  description: string | null;
+  couleur: string | null;
+  icone: string | null;
+  created_at: string | null;
+}
+
+export interface CategorieProduit {
+  id: number;
+  nom: string;
+  code: string;
+  filiere_id: number;
+  description: string | null;
+  icone: string | null;
+  created_at: string | null;
+}
+
+export interface Produit {
+  id: number;
+  nom: string;
+  code: string;
+  categorie_id: number;
+  nom_scientifique: string | null;
+  unite_mesure: string | null;
+  description: string | null;
+  icone: string | null;
+  couleur: string | null;
+  created_at: string | null;
+}
+
+export interface Production {
+  id: number;
+  produit_id: number;
+  annee: number;
+  region_id: number | null;
+  departement_id: number | null;
+  commune_id: number | null;
+  saison: string | null;
+  quantite: number | null;
+  valeur_fcfa: number | null;
+  superficie_ha: number | null;
+  rendement: number | null;
+  nombre_producteurs: number | null;
+  source_donnees: string | null;
+  fiabilite: string | null;
+  notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Infrastructure {
+  id: number;
+  nom: string;
+  type_infrastructure: string | null;
+  commune_id: number | null;
+  capacite: string | null;
+  adresse: string | null;
+  contact: string | null;
+  created_at: string | null;
+}
+
+export interface ZoneHalieutique {
+  id: number;
+  nom: string;
+  type_zone: string | null;
+  superficie_km2: number | null;
+  departements_concernes: string[] | null;
+  especes_principales: string[] | null;
+  created_at: string | null;
+}
+
+export interface BassinProduction {
+  id: number;
+  nom: string;
+  code: string;
+  filiere_id: number;
+  description: string | null;
+  produits_dominants: string[] | null;
+  importance: string | null;
+  created_at: string | null;
+}
+
+export interface GeoJSONFeature {
+  type: 'Feature';
+  geometry: {
+    type: string;
+    coordinates: any;
+  };
+  properties: Record<string, any>;
+}
+
+export interface GeoJSONFeatureCollection {
+  type: 'FeatureCollection';
+  features: GeoJSONFeature[];
+}
+
+export interface ApiResponse<T> {
+  total: number;
+  items: T[];
+}
+
+export interface StatistiquesGlobales {
+  total_regions: number;
+  total_departements: number;
+  total_communes: number;
+  total_filieres: number;
+  total_produits: number;
+  total_productions: number;
+}
+
+export type MapLevel = 'regions' | 'departements' | 'communes';
+
+export interface FilterState {
+  filiere_id: number | null;
+  categorie_id: number | null;
+  produit_id: number | null;
+  annee: number | null;
+  region_id: number | null;
+  departement_id: number | null;
+  commune_id: number | null;
+  mapLevel: MapLevel;
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\utils\helper.ts
+================================================================================
+
+// Utilitaires pour l'application
+
+/**
+ * Formate un nombre avec séparateurs de milliers
+ */
+export const formatNumber = (num: number): string => {
+  return new Intl.NumberFormat('fr-FR').format(num);
+};
+
+/**
+ * Formate une valeur monétaire en FCFA
+ */
+export const formatCurrency = (value: number): string => {
+  return `${formatNumber(value)} FCFA`;
+};
+
+/**
+ * Formate une superficie en hectares ou km²
+ */
+export const formatSuperficie = (value: number, unit: 'ha' | 'km2' = 'ha'): string => {
+  return `${formatNumber(value)} ${unit === 'ha' ? 'ha' : 'km²'}`;
+};
+
+/**
+ * Tronque un texte avec ellipse
+ */
+export const truncateText = (text: string, maxLength: number = 50): string => {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + '...';
+};
+
+/**
+ * Génère une couleur aléatoire pour les visualisations
+ */
+export const generateRandomColor = (): string => {
+  const colors = [
+    '#22c55e', // green-500
+    '#10b981', // emerald-500
+    '#14b8a6', // teal-500
+    '#06b6d4', // cyan-500
+    '#3b82f6', // blue-500
+    '#6366f1', // indigo-500
+    '#8b5cf6', // violet-500
+    '#a855f7', // purple-500
+  ];
+  return colors[Math.floor(Math.random() * colors.length)];
+};
+
+/**
+ * Détermine la couleur en fonction d'une valeur
+ */
+export const getColorByValue = (value: number, max: number): string => {
+  const percentage = (value / max) * 100;
+  
+  if (percentage >= 75) return '#22c55e'; // vert foncé
+  if (percentage >= 50) return '#86efac'; // vert clair
+  if (percentage >= 25) return '#fbbf24'; // jaune
+  return '#f87171'; // rouge
+};
+
+/**
+ * Calcule le pourcentage
+ */
+export const calculatePercentage = (value: number, total: number): number => {
+  if (total === 0) return 0;
+  return Math.round((value / total) * 100);
+};
+
+/**
+ * Formate une date
+ */
+export const formatDate = (date: string | Date): string => {
+  return new Intl.DateTimeFormat('fr-FR', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(new Date(date));
+};
+
+/**
+ * Génère un ID unique
+ */
+export const generateId = (): string => {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+};
+
+/**
+ * Debounce une fonction
+ */
+export const debounce = <T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): ((...args: Parameters<T>) => void) => {
+  let timeout: NodeJS.Timeout;
+  
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+};
+
+/**
+ * Classe CSS conditionnelle
+ */
+export const cn = (...classes: (string | boolean | undefined | null)[]): string => {
+  return classes.filter(Boolean).join(' ');
+};
+
+/**
+ * Vérifie si une valeur est vide
+ */
+export const isEmpty = (value: any): boolean => {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return value.trim().length === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') return Object.keys(value).length === 0;
+  return false;
+};
+
+/**
+ * Extrait les coordonnées d'un objet GeoJSON
+ */
+export const extractCoordinates = (geometry: any): [number, number] | null => {
+  if (!geometry || !geometry.coordinates) return null;
+  
+  try {
+    if (geometry.type === 'Point') {
+      return [geometry.coordinates[1], geometry.coordinates[0]];
+    }
+    if (geometry.type === 'Polygon') {
+      const coords = geometry.coordinates[0][0];
+      return [coords[1], coords[0]];
+    }
+    if (geometry.type === 'MultiPolygon') {
+      const coords = geometry.coordinates[0][0][0];
+      return [coords[1], coords[0]];
+    }
+  } catch (error) {
+    console.error('Erreur lors de l\'extraction des coordonnées:', error);
+  }
+  
+  return null;
+};
+
+/**
+ * Calcule le centre d'un polygon
+ */
+export const calculateCenter = (coordinates: number[][][]): [number, number] => {
+  let totalLat = 0;
+  let totalLng = 0;
+  let count = 0;
+  
+  coordinates[0].forEach(([lng, lat]) => {
+    totalLat += lat;
+    totalLng += lng;
+    count++;
+  });
+  
+  return [totalLat / count, totalLng / count];
+};
+
+/**
+ * Trie un tableau d'objets par propriété
+ */
+export const sortBy = <T>(
+  array: T[],
+  key: keyof T,
+  order: 'asc' | 'desc' = 'asc'
+): T[] => {
+  return [...array].sort((a, b) => {
+    const aVal = a[key];
+    const bVal = b[key];
+    
+    if (aVal === bVal) return 0;
+    
+    const comparison = aVal > bVal ? 1 : -1;
+    return order === 'asc' ? comparison : -comparison;
+  });
+};
+
+/**
+ * Groupe un tableau par propriété
+ */
+export const groupBy = <T>(
+  array: T[],
+  key: keyof T
+): Record<string, T[]> => {
+  return array.reduce((acc, item) => {
+    const group = String(item[key]);
+    if (!acc[group]) {
+      acc[group] = [];
+    }
+    acc[group].push(item);
+    return acc;
+  }, {} as Record<string, T[]>);
+};
+
+/**
+ * Convertit une chaîne en slug
+ */
+export const slugify = (text: string): string => {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w\-]+/g, '')
+    .replace(/\-\-+/g, '-');
+};
+
+/**
+ * Copie du texte dans le presse-papiers
+ */
+export const copyToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    console.error('Erreur lors de la copie:', error);
+    return false;
+  }
+};
+
+/**
+ * Télécharge un fichier JSON
+ */
+export const downloadJSON = (data: any, filename: string): void => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Télécharge un fichier CSV
+ */
+export const downloadCSV = (data: any[], filename: string): void => {
+  if (data.length === 0) return;
+  
+  const headers = Object.keys(data[0]).join(',');
+  const rows = data.map(obj => 
+    Object.values(obj).map(val => `"${val}"`).join(',')
+  );
+  const csv = [headers, ...rows].join('\n');
+  
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\utils\constant.ts
+================================================================================
+
+// Constantes de l'application
+
+export const APP_NAME = 'AgriVision';
+export const APP_DESCRIPTION = 'Plateforme de cartographie des données agricoles du Cameroun';
+
+// Configuration de la carte
+export const MAP_CONFIG = {
+  DEFAULT_CENTER: [7.3697, 12.3547] as [number, number], // Centre du Cameroun
+  DEFAULT_ZOOM: 6,
+  MIN_ZOOM: 5,
+  MAX_ZOOM: 18,
+  TILE_URL: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  ATTRIBUTION: '© OpenStreetMap contributors',
+} as const;
+
+// Couleurs des niveaux de carte
+export const MAP_LEVEL_COLORS = {
+  regions: {
+    fill: '#86efac',
+    border: '#16a34a',
+    selected: '#22c55e',
+  },
+  departements: {
+    fill: '#6ee7b7',
+    border: '#059669',
+    selected: '#10b981',
+  },
+  communes: {
+    fill: '#5eead4',
+    border: '#0d9488',
+    selected: '#14b8a6',
+  },
+} as const;
+
+// Limites de pagination
+export const PAGINATION = {
+  DEFAULT_LIMIT: 100,
+  MAX_LIMIT: 500,
+  DEFAULT_SKIP: 0,
+} as const;
+
+// Délais pour les opérations asynchrones
+export const DELAYS = {
+  DEBOUNCE_SEARCH: 500,
+  AUTO_REFRESH: 60000, // 1 minute
+  TOAST_DURATION: 3000,
+  ANIMATION_DURATION: 300,
+} as const;
+
+// Messages d'erreur
+export const ERROR_MESSAGES = {
+  NETWORK_ERROR: 'Erreur de connexion. Veuillez vérifier votre connexion internet.',
+  API_ERROR: 'Erreur lors de la récupération des données. Veuillez réessayer.',
+  NOT_FOUND: 'Ressource non trouvée.',
+  UNKNOWN_ERROR: 'Une erreur inattendue s\'est produite.',
+  EMPTY_RESULT: 'Aucun résultat trouvé.',
+} as const;
+
+// Messages de succès
+export const SUCCESS_MESSAGES = {
+  DATA_LOADED: 'Données chargées avec succès',
+  FILTER_APPLIED: 'Filtres appliqués',
+  COPIED: 'Copié dans le presse-papiers',
+} as const;
+
+// Types de filières (exemples)
+export const FILIERE_TYPES = [
+  'Agriculture',
+  'Élevage',
+  'Pêche',
+  'Foresterie',
+] as const;
+
+// Types de communes
+export const COMMUNE_TYPES = [
+  'urbaine',
+  'rurale',
+] as const;
+
+// Types de zones halieutiques
+export const ZONE_HALIEUTIQUE_TYPES = [
+  'maritime',
+  'fluviale',
+  'lacustre',
+] as const;
+
+// Types d'infrastructures
+export const INFRASTRUCTURE_TYPES = [
+  'marché',
+  'entrepôt',
+  'coopérative',
+  'usine_transformation',
+  'point_collecte',
+] as const;
+
+// Unités de mesure
+export const UNITES_MESURE = [
+  'kg',
+  'tonne',
+  'litre',
+  'unité',
+  'sac',
+] as const;
+
+// Niveaux de fiabilité
+export const NIVEAUX_FIABILITE = [
+  'haute',
+  'moyenne',
+  'faible',
+] as const;
+
+// Saisons
+export const SAISONS = [
+  'saison_sèche',
+  'saison_pluies',
+  'toute_année',
+] as const;
+
+// Régions du Cameroun (pour référence)
+export const CAMEROUN_REGIONS = [
+  'Adamaoua',
+  'Centre',
+  'Est',
+  'Extrême-Nord',
+  'Littoral',
+  'Nord',
+  'Nord-Ouest',
+  'Ouest',
+  'Sud',
+  'Sud-Ouest',
+] as const;
+
+// Routes de l'application
+export const ROUTES = {
+  HOME: '/',
+  MAP: '/map',
+  ABOUT: '/about',
+  STATS: '/stats',
+} as const;
+
+// Configuration du thème
+export const THEME = {
+  COLORS: {
+    primary: {
+      50: '#f0fdf4',
+      100: '#dcfce7',
+      200: '#bbf7d0',
+      300: '#86efac',
+      400: '#4ade80',
+      500: '#22c55e',
+      600: '#16a34a',
+      700: '#15803d',
+      800: '#166534',
+      900: '#14532d',
+      950: '#052e16',
+    },
+  },
+  FONTS: {
+    display: 'Montserrat, system-ui, sans-serif',
+    body: 'Open Sans, system-ui, sans-serif',
+  },
+} as const;
+
+// Tailles d'écran (breakpoints Tailwind)
+export const BREAKPOINTS = {
+  sm: 640,
+  md: 768,
+  lg: 1024,
+  xl: 1280,
+  '2xl': 1536,
+} as const;
+
+// Configuration du cache
+export const CACHE_CONFIG = {
+  ENABLED: true,
+  TTL: 300000, // 5 minutes
+  MAX_SIZE: 100, // nombre maximum d'entrées
+} as const;
+
+// Formats d'export
+export const EXPORT_FORMATS = [
+  'json',
+  'csv',
+  'geojson',
+  'pdf',
+] as const;
+
+// Configuration des animations
+export const ANIMATION_CONFIG = {
+  EASE: 'ease-out',
+  DURATION: {
+    fast: 150,
+    normal: 300,
+    slow: 500,
+  },
+} as const;
+
+// Icônes par filière (mapping)
+export const FILIERE_ICONS: Record<string, string> = {
+  agriculture: '🌾',
+  elevage: '🐄',
+  peche: '🐟',
+  foresterie: '🌳',
+} as const;
+
+// Emojis pour les statistiques
+export const STAT_EMOJIS = {
+  production: '📊',
+  superficie: '📏',
+  producteurs: '👥',
+  valeur: '💰',
+  rendement: '📈',
+} as const;
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\eslint.config.mjs
+================================================================================
+
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\next-env.d.ts
+================================================================================
+
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\README.md
+================================================================================
+
+# 🌿 AgriVision
+
+Plateforme web moderne de cartographie interactive pour visualiser et analyser les données de production agricole, pastorale et halieutique du Cameroun.
+
+## ✨ Fonctionnalités
+
+- 🗺️ **Carte Interactive** - Visualisation des divisions administratives (régions, départements, communes)
+- 🌾 **Filières Agricoles** - Exploration des différentes filières et leurs produits
+- 📊 **Statistiques Détaillées** - Données de production avec filtres multiples
+- 🎨 **Design Moderne** - Interface élégante avec support du mode sombre/clair
+- ⚡ **Performance Optimale** - Chargement rapide avec skeleton screens
+- 📱 **Responsive** - Interface adaptée à tous les écrans
+- 🔍 **Recherche Avancée** - Recherche et filtrage par filière, catégorie, produit, année
+- 🗺️ **Zoom Intelligent** - Zoom automatique sur les zones sélectionnées
+- 📈 **Visualisations** - Graphiques et statistiques en temps réel
+
+## 🚀 Technologies
+
+- **Next.js 14** - Framework React avec App Router
+- **TypeScript** - Typage statique
+- **Tailwind CSS** - Framework CSS utilitaire
+- **Leaflet** - Bibliothèque de cartographie
+- **Lucide React** - Icônes modernes
+- **API Backend** - https://apiti.onrender.com
+
+## 📦 Installation
+
+### Prérequis
+
+- Node.js 18+ 
+- npm ou yarn
+
+### Installation des dépendances
+
+```bash
+npm install
+# ou
+yarn install
+```
+
+### Lancement en développement
+
+```bash
+npm run dev
+# ou
+yarn dev
+```
+
+Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
+
+### Build de production
+
+```bash
+npm run build
+npm start
+# ou
+yarn build
+yarn start
+```
+
+## 🎨 Structure du Projet
+
+```
+cameroun-agro-map/
+├── app/                      # Pages Next.js (App Router)
+│   ├── layout.tsx           # Layout principal
+│   ├── page.tsx             # Page d'accueil
+│   ├── map/                 # Page de la carte
+│   │   └── page.tsx
+│   └── globals.css          # Styles globaux
+├── components/               # Composants réutilisables
+│   ├── MapView.tsx          # Composant de la carte Leaflet
+│   ├── Sidebar.tsx          # Barre latérale avec filtres
+│   ├── Skeleton.tsx         # Composants de chargement
+│   └── ThemeToggle.tsx      # Bouton de changement de thème
+├── lib/                      # Utilitaires et services
+│   └── api.ts               # Service API avec logging
+├── types/                    # Types TypeScript
+│   └── api.ts               # Types pour l'API
+├── public/                   # Fichiers statiques
+├── tailwind.config.js       # Configuration Tailwind
+├── tsconfig.json            # Configuration TypeScript
+└── package.json             # Dépendances
+```
+
+## 🔧 Configuration
+
+### API Backend
+
+L'application utilise l'API backend à l'adresse : `https://apiti.onrender.com`
+
+Pour modifier l'URL de l'API, éditez le fichier `lib/api.ts` :
+
+```typescript
+const API_BASE_URL = 'https://apiti.onrender.com';
+```
+
+### Thème de couleurs
+
+Le thème principal utilise des tons de vert. Pour personnaliser, modifiez `tailwind.config.js` :
+
+```javascript
+colors: {
+  primary: {
+    50: '#f0fdf4',
+    // ... autres nuances
+  },
+}
+```
+
+## 📚 Utilisation
+
+### Page d'accueil
+
+- Affiche les statistiques globales
+- Présente les fonctionnalités principales
+- Liens vers la carte interactive
+
+### Carte Interactive
+
+1. **Filtres** - Sélectionnez une filière, catégorie ou produit
+2. **Niveau de carte** - Choisissez entre régions, départements ou communes
+3. **Recherche** - Recherchez des éléments spécifiques
+4. **Interaction** - Cliquez sur une zone pour voir les détails
+5. **Zoom** - La carte zoome automatiquement sur la sélection
+
+### Logging
+
+Toutes les requêtes API sont loggées dans la console du navigateur avec :
+- 🔗 URL de la requête
+- 📋 Méthode HTTP
+- ✅ Réponse (en cas de succès)
+- ❌ Erreur (en cas d'échec)
+
+## 🎯 Routes API Principales
+
+- `/api/v1/regions/` - Liste des régions
+- `/api/v1/departements/` - Liste des départements
+- `/api/v1/communes/` - Liste des communes
+- `/api/v1/filieres/` - Liste des filières
+- `/api/v1/produits/` - Liste des produits
+- `/api/v1/productions/` - Données de production
+- `/api/v1/geojson/regions` - GeoJSON des régions
+- `/api/v1/statistiques/globales` - Statistiques globales
+
+Voir la documentation Swagger complète : [https://apiti.onrender.com/docs](https://apiti.onrender.com/docs)
+
+## 🌙 Mode Sombre
+
+L'application détecte automatiquement les préférences du navigateur et s'adapte au mode clair/sombre. 
+Un bouton de basculement est disponible dans l'en-tête.
+
+## 🤝 Contribution
+
+Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou une pull request.
+
+## 📄 Licence
+
+Ce projet est développé dans le cadre du projet 5GI 2025-2026.
+
+## 👥 Auteurs
+
+Projet réalisé par un groupe d'étudiants pour la cartographie des bassins de production du Cameroun.
+
+---
+
+**Note** : Cette application utilise les données ouvertes des organismes publics camerounais et est destinée à des fins éducatives et de visualisation.
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\tsconfig.json
+================================================================================
+
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+, "tailwind.config.js"  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\package.json
+================================================================================
+
+{
+  "name": "cameroun-agro-map",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "leaflet": "^1.9.4",
+    "react-leaflet": "^4.2.1",
+    "lucide-react": "^0.263.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/leaflet": "^1.9.8",
+    "typescript": "^5",
+    "tailwindcss": "^3.4.1",
+    "postcss": "^8.4.35",
+    "autoprefixer": "^10.4.17"
+  }
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
+================================================================================
+
+{
+  "name": "cameroun-agro-map",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "cameroun-agro-map",
+      "version": "1.0.0",
+      "dependencies": {
+        "leaflet": "^1.9.4",
+        "lucide-react": "^0.263.1",
+        "next": "14.2.18",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+        "react-leaflet": "^4.2.1"
+      },
+      "devDependencies": {
+        "@types/leaflet": "^1.9.8",
+        "@types/node": "^20",
+        "@types/react": "^18",
+        "@types/react-dom": "^18",
+        "autoprefixer": "^10.4.17",
+        "postcss": "^8.4.35",
+        "tailwindcss": "^3.4.1",
+        "typescript": "^5"
+      }
+    },
+    "node_modules/@alloc/quick-lru": {
+      "version": "5.2.0",
+      "resolved": "https://registry.npmjs.org/@alloc/quick-lru/-/quick-lru-5.2.0.tgz",
+      "integrity": "sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=10"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/sindresorhus"
+      }
+    },
+    "node_modules/@jridgewell/gen-mapping": {
+      "version": "0.3.13",
+      "resolved": "https://registry.npmjs.org/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz",
+      "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/sourcemap-codec": "^1.5.0",
+        "@jridgewell/trace-mapping": "^0.3.24"
+      }
+    },
+    "node_modules/@jridgewell/resolve-uri": {
+      "version": "3.1.2",
+      "resolved": "https://registry.npmjs.org/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz",
+      "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.0.0"
+      }
+    },
+    "node_modules/@jridgewell/sourcemap-codec": {
+      "version": "1.5.5",
+      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@jridgewell/trace-mapping": {
+      "version": "0.3.31",
+      "resolved": "https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz",
+      "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/resolve-uri": "^3.1.0",
+        "@jridgewell/sourcemap-codec": "^1.4.14"
+      }
+    },
+    "node_modules/@next/env": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/env/-/env-14.2.18.tgz",
+      "integrity": "sha512-2vWLOUwIPgoqMJKG6dt35fVXVhgM09tw4tK3/Q34GFXDrfiHlG7iS33VA4ggnjWxjiz9KV5xzfsQzJX6vGAekA==",
+      "license": "MIT"
+    },
+    "node_modules/@next/swc-darwin-arm64": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-14.2.18.tgz",
+      "integrity": "sha512-tOBlDHCjGdyLf0ube/rDUs6VtwNOajaWV+5FV/ajPgrvHeisllEdymY/oDgv2cx561+gJksfMUtqf8crug7sbA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-darwin-x64": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-14.2.18.tgz",
+      "integrity": "sha512-uJCEjutt5VeJ30jjrHV1VIHCsbMYnEqytQgvREx+DjURd/fmKy15NaVK4aR/u98S1LGTnjq35lRTnRyygglxoA==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-arm64-gnu": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-14.2.18.tgz",
+      "integrity": "sha512-IL6rU8vnBB+BAm6YSWZewc+qvdL1EaA+VhLQ6tlUc0xp+kkdxQrVqAnh8Zek1ccKHlTDFRyAft0e60gteYmQ4A==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-arm64-musl": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-14.2.18.tgz",
+      "integrity": "sha512-RCaENbIZqKKqTlL8KNd+AZV/yAdCsovblOpYFp0OJ7ZxgLNbV5w23CUU1G5On+0fgafrsGcW+GdMKdFjaRwyYA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-x64-gnu": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-14.2.18.tgz",
+      "integrity": "sha512-3kmv8DlyhPRCEBM1Vavn8NjyXtMeQ49ID0Olr/Sut7pgzaQTo4h01S7Z8YNE0VtbowyuAL26ibcz0ka6xCTH5g==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-linux-x64-musl": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-14.2.18.tgz",
+      "integrity": "sha512-mliTfa8seVSpTbVEcKEXGjC18+TDII8ykW4a36au97spm9XMPqQTpdGPNBJ9RySSFw9/hLuaCMByluQIAnkzlw==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-arm64-msvc": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-14.2.18.tgz",
+      "integrity": "sha512-J5g0UFPbAjKYmqS3Cy7l2fetFmWMY9Oao32eUsBPYohts26BdrMUyfCJnZFQkX9npYaHNDOWqZ6uV9hSDPw9NA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-ia32-msvc": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-ia32-msvc/-/swc-win32-ia32-msvc-14.2.18.tgz",
+      "integrity": "sha512-Ynxuk4ZgIpdcN7d16ivJdjsDG1+3hTvK24Pp8DiDmIa2+A4CfhJSEHHVndCHok6rnLUzAZD+/UOKESQgTsAZGg==",
+      "cpu": [
+        "ia32"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@next/swc-win32-x64-msvc": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-14.2.18.tgz",
+      "integrity": "sha512-dtRGMhiU9TN5nyhwzce+7c/4CCeykYS+ipY/4mIrGzJ71+7zNo55ZxCB7cAVuNqdwtYniFNR2c9OFQ6UdFIMcg==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@nodelib/fs.scandir": {
+      "version": "2.1.5",
+      "resolved": "https://registry.npmjs.org/@nodelib/fs.scandir/-/fs.scandir-2.1.5.tgz",
+      "integrity": "sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@nodelib/fs.stat": "2.0.5",
+        "run-parallel": "^1.1.9"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/@nodelib/fs.stat": {
+      "version": "2.0.5",
+      "resolved": "https://registry.npmjs.org/@nodelib/fs.stat/-/fs.stat-2.0.5.tgz",
+      "integrity": "sha512-RkhPPp2zrqDAQA/2jNhnztcPAlv64XdhIp7a7454A5ovI7Bukxgt7MX7udwAu3zg1DcpPU0rz3VV1SeaqvY4+A==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/@nodelib/fs.walk": {
+      "version": "1.2.8",
+      "resolved": "https://registry.npmjs.org/@nodelib/fs.walk/-/fs.walk-1.2.8.tgz",
+      "integrity": "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@nodelib/fs.scandir": "2.1.5",
+        "fastq": "^1.6.0"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/@react-leaflet/core": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/@react-leaflet/core/-/core-2.1.0.tgz",
+      "integrity": "sha512-Qk7Pfu8BSarKGqILj4x7bCSZ1pjuAPZ+qmRwH5S7mDS91VSbVVsJSrW4qA+GPrro8t69gFYVMWb1Zc4yFmPiVg==",
+      "license": "Hippocratic-2.1",
+      "peerDependencies": {
+        "leaflet": "^1.9.0",
+        "react": "^18.0.0",
+        "react-dom": "^18.0.0"
+      }
+    },
+    "node_modules/@swc/counter": {
+      "version": "0.1.3",
+      "resolved": "https://registry.npmjs.org/@swc/counter/-/counter-0.1.3.tgz",
+      "integrity": "sha512-e2BR4lsJkkRlKZ/qCHPw9ZaSxc0MVUd7gtbtaB7aMvHeJVYe8sOB8DBZkP2DtISHGSku9sCK6T6cnY0CtXrOCQ==",
+      "license": "Apache-2.0"
+    },
+    "node_modules/@swc/helpers": {
+      "version": "0.5.5",
+      "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.5.5.tgz",
+      "integrity": "sha512-KGYxvIOXcceOAbEk4bi/dVLEK9z8sZ0uBB3Il5b1rhfClSpcX0yfRO0KmTkqR2cnQDymwLB+25ZyMzICg/cm/A==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@swc/counter": "^0.1.3",
+        "tslib": "^2.4.0"
+      }
+    },
+    "node_modules/@types/geojson": {
+      "version": "7946.0.16",
+      "resolved": "https://registry.npmjs.org/@types/geojson/-/geojson-7946.0.16.tgz",
+      "integrity": "sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/leaflet": {
+      "version": "1.9.21",
+      "resolved": "https://registry.npmjs.org/@types/leaflet/-/leaflet-1.9.21.tgz",
+      "integrity": "sha512-TbAd9DaPGSnzp6QvtYngntMZgcRk+igFELwR2N99XZn7RXUdKgsXMR+28bUO0rPsWp8MIu/f47luLIQuSLYv/w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/geojson": "*"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "20.19.30",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.30.tgz",
+      "integrity": "sha512-WJtwWJu7UdlvzEAUm484QNg5eAoq5QR08KDNx7g45Usrs2NtOPiX8ugDqmKdXkyL03rBqU5dYNYVQetEpBHq2g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~6.21.0"
+      }
+    },
+    "node_modules/@types/prop-types": {
+      "version": "15.7.15",
+      "resolved": "https://registry.npmjs.org/@types/prop-types/-/prop-types-15.7.15.tgz",
+      "integrity": "sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/react": {
+      "version": "18.3.27",
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-18.3.27.tgz",
+      "integrity": "sha512-cisd7gxkzjBKU2GgdYrTdtQx1SORymWyaAFhaxQPK9bYO9ot3Y5OikQRvY0VYQtvwjeQnizCINJAenh/V7MK2w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/prop-types": "*",
+        "csstype": "^3.2.2"
+      }
+    },
+    "node_modules/@types/react-dom": {
+      "version": "18.3.7",
+      "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-18.3.7.tgz",
+      "integrity": "sha512-MEe3UeoENYVFXzoXEWsvcpg6ZvlrFNlOQ7EOsvhI3CfAXwzPfO8Qwuxd40nepsYKqyyVQnTdEfv68q91yLcKrQ==",
+      "dev": true,
+      "license": "MIT",
+      "peerDependencies": {
+        "@types/react": "^18.0.0"
+      }
+    },
+    "node_modules/any-promise": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/any-promise/-/any-promise-1.3.0.tgz",
+      "integrity": "sha512-7UvmKalWRt1wgjL1RrGxoSJW/0QZFIegpeGvZG9kjp8vrRu55XTHbwnqq2GpXm9uLbcuhxm3IqX9OB4MZR1b2A==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/anymatch": {
+      "version": "3.1.3",
+      "resolved": "https://registry.npmjs.org/anymatch/-/anymatch-3.1.3.tgz",
+      "integrity": "sha512-KMReFUr0B4t+D+OBkjR3KYqvocp2XaSzO55UcB6mgQMd3KbcE+mWTyvVV7D/zsdEbNnV6acZUutkiHQXvTr1Rw==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "normalize-path": "^3.0.0",
+        "picomatch": "^2.0.4"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/arg": {
+      "version": "5.0.2",
+      "resolved": "https://registry.npmjs.org/arg/-/arg-5.0.2.tgz",
+      "integrity": "sha512-PYjyFOLKQ9y57JvQ6QLo8dAgNqswh8M1RMJYdQduT6xbWSgK36P/Z/v+p888pM69jMMfS8Xd8F6I1kQ/I9HUGg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/autoprefixer": {
+      "version": "10.4.24",
+      "resolved": "https://registry.npmjs.org/autoprefixer/-/autoprefixer-10.4.24.tgz",
+      "integrity": "sha512-uHZg7N9ULTVbutaIsDRoUkoS8/h3bdsmVJYZ5l3wv8Cp/6UIIoRDm90hZ+BwxUj/hGBEzLxdHNSKuFpn8WOyZw==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/autoprefixer"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "browserslist": "^4.28.1",
+        "caniuse-lite": "^1.0.30001766",
+        "fraction.js": "^5.3.4",
+        "picocolors": "^1.1.1",
+        "postcss-value-parser": "^4.2.0"
+      },
+      "bin": {
+        "autoprefixer": "bin/autoprefixer"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      },
+      "peerDependencies": {
+        "postcss": "^8.1.0"
+      }
+    },
+    "node_modules/baseline-browser-mapping": {
+      "version": "2.9.19",
+      "resolved": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.9.19.tgz",
+      "integrity": "sha512-ipDqC8FrAl/76p2SSWKSI+H9tFwm7vYqXQrItCuiVPt26Km0jS+NzSsBWAaBusvSbQcfJG+JitdMm+wZAgTYqg==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "baseline-browser-mapping": "dist/cli.js"
+      }
+    },
+    "node_modules/binary-extensions": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/binary-extensions/-/binary-extensions-2.3.0.tgz",
+      "integrity": "sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/sindresorhus"
+      }
+    },
+    "node_modules/braces": {
+      "version": "3.0.3",
+      "resolved": "https://registry.npmjs.org/braces/-/braces-3.0.3.tgz",
+      "integrity": "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "fill-range": "^7.1.1"
+      },
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/browserslist": {
+      "version": "4.28.1",
+      "resolved": "https://registry.npmjs.org/browserslist/-/browserslist-4.28.1.tgz",
+      "integrity": "sha512-ZC5Bd0LgJXgwGqUknZY/vkUQ04r8NXnJZ3yYi4vDmSiZmC/pdSN0NbNRPxZpbtO4uAfDUAFffO8IZoM3Gj8IkA==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/browserslist"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "baseline-browser-mapping": "^2.9.0",
+        "caniuse-lite": "^1.0.30001759",
+        "electron-to-chromium": "^1.5.263",
+        "node-releases": "^2.0.27",
+        "update-browserslist-db": "^1.2.0"
+      },
+      "bin": {
+        "browserslist": "cli.js"
+      },
+      "engines": {
+        "node": "^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7"
+      }
+    },
+    "node_modules/busboy": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
+      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
+      "dependencies": {
+        "streamsearch": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=10.16.0"
+      }
+    },
+    "node_modules/camelcase-css": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/camelcase-css/-/camelcase-css-2.0.1.tgz",
+      "integrity": "sha512-QOSvevhslijgYwRx6Rv7zKdMF8lbRmx+uQGx2+vDc+KI/eBnsy9kit5aj23AgGu3pa4t9AgwbnXWqS+iOY+2aA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/caniuse-lite": {
+      "version": "1.0.30001767",
+      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001767.tgz",
+      "integrity": "sha512-34+zUAMhSH+r+9eKmYG+k2Rpt8XttfE4yXAjoZvkAPs15xcYQhyBYdalJ65BzivAvGRMViEjy6oKr/S91loekQ==",
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/caniuse-lite"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "CC-BY-4.0"
+    },
+    "node_modules/chokidar": {
+      "version": "3.6.0",
+      "resolved": "https://registry.npmjs.org/chokidar/-/chokidar-3.6.0.tgz",
+      "integrity": "sha512-7VT13fmjotKpGipCW9JEQAusEPE+Ei8nl6/g4FBAmIm0GOOLMua9NDDo/DWp0ZAxCr3cPq5ZpBqmPAQgDda2Pw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "anymatch": "~3.1.2",
+        "braces": "~3.0.2",
+        "glob-parent": "~5.1.2",
+        "is-binary-path": "~2.1.0",
+        "is-glob": "~4.0.1",
+        "normalize-path": "~3.0.0",
+        "readdirp": "~3.6.0"
+      },
+      "engines": {
+        "node": ">= 8.10.0"
+      },
+      "funding": {
+        "url": "https://paulmillr.com/funding/"
+      },
+      "optionalDependencies": {
+        "fsevents": "~2.3.2"
+      }
+    },
+    "node_modules/chokidar/node_modules/glob-parent": {
+      "version": "5.1.2",
+      "resolved": "https://registry.npmjs.org/glob-parent/-/glob-parent-5.1.2.tgz",
+      "integrity": "sha512-AOIgSQCepiJYwP3ARnGx+5VnTu2HBYdzbGP45eLw1vr3zB3vZLeyed1sC9hnbcOc9/SrMyM5RPQrkGz4aS9Zow==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "is-glob": "^4.0.1"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/client-only": {
+      "version": "0.0.1",
+      "resolved": "https://registry.npmjs.org/client-only/-/client-only-0.0.1.tgz",
+      "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+      "license": "MIT"
+    },
+    "node_modules/commander": {
+      "version": "4.1.1",
+      "resolved": "https://registry.npmjs.org/commander/-/commander-4.1.1.tgz",
+      "integrity": "sha512-NOKm8xhkzAjzFx8B2v5OAHT+u5pRQc2UCa2Vq9jYL/31o2wi9mxBA7LIFs3sV5VSC49z6pEhfbMULvShKj26WA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/cssesc": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/cssesc/-/cssesc-3.0.0.tgz",
+      "integrity": "sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg==",
+      "dev": true,
+      "license": "MIT",
+      "bin": {
+        "cssesc": "bin/cssesc"
+      },
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/csstype": {
+      "version": "3.2.3",
+      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/didyoumean": {
+      "version": "1.2.2",
+      "resolved": "https://registry.npmjs.org/didyoumean/-/didyoumean-1.2.2.tgz",
+      "integrity": "sha512-gxtyfqMg7GKyhQmb056K7M3xszy/myH8w+B4RT+QXBQsvAOdc3XymqDDPHx1BgPgsdAA5SIifona89YtRATDzw==",
+      "dev": true,
+      "license": "Apache-2.0"
+    },
+    "node_modules/dlv": {
+      "version": "1.1.3",
+      "resolved": "https://registry.npmjs.org/dlv/-/dlv-1.1.3.tgz",
+      "integrity": "sha512-+HlytyjlPKnIG8XuRG8WvmBP8xs8P71y+SKKS6ZXWoEgLuePxtDoUEiH7WkdePWrQ5JBpE6aoVqfZfJUQkjXwA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/electron-to-chromium": {
+      "version": "1.5.283",
+      "resolved": "https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.283.tgz",
+      "integrity": "sha512-3vifjt1HgrGW/h76UEeny+adYApveS9dH2h3p57JYzBSXJIKUJAvtmIytDKjcSCt9xHfrNCFJ7gts6vkhuq++w==",
+      "dev": true,
+      "license": "ISC"
+    },
+    "node_modules/escalade": {
+      "version": "3.2.0",
+      "resolved": "https://registry.npmjs.org/escalade/-/escalade-3.2.0.tgz",
+      "integrity": "sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/fast-glob": {
+      "version": "3.3.3",
+      "resolved": "https://registry.npmjs.org/fast-glob/-/fast-glob-3.3.3.tgz",
+      "integrity": "sha512-7MptL8U0cqcFdzIzwOTHoilX9x5BrNqye7Z/LuC7kCMRio1EMSyqRK3BEAUD7sXRq4iT4AzTVuZdhgQ2TCvYLg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@nodelib/fs.stat": "^2.0.2",
+        "@nodelib/fs.walk": "^1.2.3",
+        "glob-parent": "^5.1.2",
+        "merge2": "^1.3.0",
+        "micromatch": "^4.0.8"
+      },
+      "engines": {
+        "node": ">=8.6.0"
+      }
+    },
+    "node_modules/fast-glob/node_modules/glob-parent": {
+      "version": "5.1.2",
+      "resolved": "https://registry.npmjs.org/glob-parent/-/glob-parent-5.1.2.tgz",
+      "integrity": "sha512-AOIgSQCepiJYwP3ARnGx+5VnTu2HBYdzbGP45eLw1vr3zB3vZLeyed1sC9hnbcOc9/SrMyM5RPQrkGz4aS9Zow==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "is-glob": "^4.0.1"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/fastq": {
+      "version": "1.20.1",
+      "resolved": "https://registry.npmjs.org/fastq/-/fastq-1.20.1.tgz",
+      "integrity": "sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "reusify": "^1.0.4"
+      }
+    },
+    "node_modules/fdir": {
+      "version": "6.5.0",
+      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": {
+        "picomatch": "^3 || ^4"
+      },
+      "peerDependenciesMeta": {
+        "picomatch": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/fill-range": {
+      "version": "7.1.1",
+      "resolved": "https://registry.npmjs.org/fill-range/-/fill-range-7.1.1.tgz",
+      "integrity": "sha512-YsGpe3WHLK8ZYi4tWDg2Jy3ebRz2rXowDxnld4bkQB00cc/1Zw9AWnC0i9ztDJitivtQvaI9KaLyKrc+hBW0yg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "to-regex-range": "^5.0.1"
+      },
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/fraction.js": {
+      "version": "5.3.4",
+      "resolved": "https://registry.npmjs.org/fraction.js/-/fraction.js-5.3.4.tgz",
+      "integrity": "sha512-1X1NTtiJphryn/uLQz3whtY6jK3fTqoE3ohKs0tT+Ujr1W59oopxmoEh7Lu5p6vBaPbgoM0bzveAW4Qi5RyWDQ==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": "*"
+      },
+      "funding": {
+        "type": "github",
+        "url": "https://github.com/sponsors/rawify"
+      }
+    },
+    "node_modules/fsevents": {
+      "version": "2.3.3",
+      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
+      }
+    },
+    "node_modules/function-bind": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+      "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
+      "dev": true,
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/glob-parent": {
+      "version": "6.0.2",
+      "resolved": "https://registry.npmjs.org/glob-parent/-/glob-parent-6.0.2.tgz",
+      "integrity": "sha512-XxwI8EOhVQgWp6iDL+3b0r86f4d6AX6zSU55HfB4ydCEuXLXc5FcYeOu+nnGftS4TEju/11rt4KJPTMgbfmv4A==",
+      "dev": true,
+      "license": "ISC",
+      "dependencies": {
+        "is-glob": "^4.0.3"
+      },
+      "engines": {
+        "node": ">=10.13.0"
+      }
+    },
+    "node_modules/graceful-fs": {
+      "version": "4.2.11",
+      "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
+      "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
+      "license": "ISC"
+    },
+    "node_modules/hasown": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.2.tgz",
+      "integrity": "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/is-binary-path": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/is-binary-path/-/is-binary-path-2.1.0.tgz",
+      "integrity": "sha512-ZMERYes6pDydyuGidse7OsHxtbI7WVeUEozgR/g7rd0xUimYNlvZRE/K2MgZTjWy725IfelLeVcEM97mmtRGXw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "binary-extensions": "^2.0.0"
+      },
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/is-core-module": {
+      "version": "2.16.1",
+      "resolved": "https://registry.npmjs.org/is-core-module/-/is-core-module-2.16.1.tgz",
+      "integrity": "sha512-UfoeMA6fIJ8wTYFEUjelnaGI67v6+N7qXJEvQuIGa99l4xsCruSYOVSQ0uPANn4dAzm8lkYPaKLrrijLq7x23w==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "hasown": "^2.0.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/is-extglob": {
+      "version": "2.1.1",
+      "resolved": "https://registry.npmjs.org/is-extglob/-/is-extglob-2.1.1.tgz",
+      "integrity": "sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/is-glob": {
+      "version": "4.0.3",
+      "resolved": "https://registry.npmjs.org/is-glob/-/is-glob-4.0.3.tgz",
+      "integrity": "sha512-xelSayHH36ZgE7ZWhli7pW34hNbNl8Ojv5KVmkJD4hBdD3th8Tfk9vYasLM+mXWOZhFkgZfxhLSnrwRr4elSSg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "is-extglob": "^2.1.1"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/is-number": {
+      "version": "7.0.0",
+      "resolved": "https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz",
+      "integrity": "sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.12.0"
+      }
+    },
+    "node_modules/jiti": {
+      "version": "1.21.7",
+      "resolved": "https://registry.npmjs.org/jiti/-/jiti-1.21.7.tgz",
+      "integrity": "sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==",
+      "dev": true,
+      "license": "MIT",
+      "bin": {
+        "jiti": "bin/jiti.js"
+      }
+    },
+    "node_modules/js-tokens": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+      "license": "MIT"
+    },
+    "node_modules/leaflet": {
+      "version": "1.9.4",
+      "resolved": "https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz",
+      "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==",
+      "license": "BSD-2-Clause"
+    },
+    "node_modules/lilconfig": {
+      "version": "3.1.3",
+      "resolved": "https://registry.npmjs.org/lilconfig/-/lilconfig-3.1.3.tgz",
+      "integrity": "sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=14"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/antonk52"
+      }
+    },
+    "node_modules/lines-and-columns": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/lines-and-columns/-/lines-and-columns-1.2.4.tgz",
+      "integrity": "sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/loose-envify": {
+      "version": "1.4.0",
+      "resolved": "https://registry.npmjs.org/loose-envify/-/loose-envify-1.4.0.tgz",
+      "integrity": "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==",
+      "license": "MIT",
+      "dependencies": {
+        "js-tokens": "^3.0.0 || ^4.0.0"
+      },
+      "bin": {
+        "loose-envify": "cli.js"
+      }
+    },
+    "node_modules/lucide-react": {
+      "version": "0.263.1",
+      "resolved": "https://registry.npmjs.org/lucide-react/-/lucide-react-0.263.1.tgz",
+      "integrity": "sha512-keqxAx97PlaEN89PXZ6ki1N8nRjGWtDa4021GFYLNj0RgruM5odbpl8GHTExj0hhPq3sF6Up0gnxt6TSHu+ovw==",
+      "license": "ISC",
+      "peerDependencies": {
+        "react": "^16.5.1 || ^17.0.0 || ^18.0.0"
+      }
+    },
+    "node_modules/merge2": {
+      "version": "1.4.1",
+      "resolved": "https://registry.npmjs.org/merge2/-/merge2-1.4.1.tgz",
+      "integrity": "sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/micromatch": {
+      "version": "4.0.8",
+      "resolved": "https://registry.npmjs.org/micromatch/-/micromatch-4.0.8.tgz",
+      "integrity": "sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "braces": "^3.0.3",
+        "picomatch": "^2.3.1"
+      },
+      "engines": {
+        "node": ">=8.6"
+      }
+    },
+    "node_modules/mz": {
+      "version": "2.7.0",
+      "resolved": "https://registry.npmjs.org/mz/-/mz-2.7.0.tgz",
+      "integrity": "sha512-z81GNO7nnYMEhrGh9LeymoE4+Yr0Wn5McHIZMK5cfQCl+NDX08sCZgUc9/6MHni9IWuFLm1Z3HTCXu2z9fN62Q==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "any-promise": "^1.0.0",
+        "object-assign": "^4.0.1",
+        "thenify-all": "^1.0.0"
+      }
+    },
+    "node_modules/nanoid": {
+      "version": "3.3.11",
+      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz",
+      "integrity": "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "bin": {
+        "nanoid": "bin/nanoid.cjs"
+      },
+      "engines": {
+        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+      }
+    },
+    "node_modules/next": {
+      "version": "14.2.18",
+      "resolved": "https://registry.npmjs.org/next/-/next-14.2.18.tgz",
+      "integrity": "sha512-H9qbjDuGivUDEnK6wa+p2XKO+iMzgVgyr9Zp/4Iv29lKa+DYaxJGjOeEA+5VOvJh/M7HLiskehInSa0cWxVXUw==",
+      "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/security-update-2025-12-11 for more details.",
+      "license": "MIT",
+      "dependencies": {
+        "@next/env": "14.2.18",
+        "@swc/helpers": "0.5.5",
+        "busboy": "1.6.0",
+        "caniuse-lite": "^1.0.30001579",
+        "graceful-fs": "^4.2.11",
+        "postcss": "8.4.31",
+        "styled-jsx": "5.1.1"
+      },
+      "bin": {
+        "next": "dist/bin/next"
+      },
+      "engines": {
+        "node": ">=18.17.0"
+      },
+      "optionalDependencies": {
+        "@next/swc-darwin-arm64": "14.2.18",
+        "@next/swc-darwin-x64": "14.2.18",
+        "@next/swc-linux-arm64-gnu": "14.2.18",
+        "@next/swc-linux-arm64-musl": "14.2.18",
+        "@next/swc-linux-x64-gnu": "14.2.18",
+        "@next/swc-linux-x64-musl": "14.2.18",
+        "@next/swc-win32-arm64-msvc": "14.2.18",
+        "@next/swc-win32-ia32-msvc": "14.2.18",
+        "@next/swc-win32-x64-msvc": "14.2.18"
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": "^1.1.0",
+        "@playwright/test": "^1.41.2",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "sass": "^1.3.0"
+      },
+      "peerDependenciesMeta": {
+        "@opentelemetry/api": {
+          "optional": true
+        },
+        "@playwright/test": {
+          "optional": true
+        },
+        "sass": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/next/node_modules/postcss": {
+      "version": "8.4.31",
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.4.31.tgz",
+      "integrity": "sha512-PS08Iboia9mts/2ygV3eLpY5ghnUcfLV/EXTOW1E2qYxJKGGBUtNjN76FYHnMs36RmARn41bC0AZmn+rR0OVpQ==",
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/postcss"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "nanoid": "^3.3.6",
+        "picocolors": "^1.0.0",
+        "source-map-js": "^1.0.2"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      }
+    },
+    "node_modules/node-releases": {
+      "version": "2.0.27",
+      "resolved": "https://registry.npmjs.org/node-releases/-/node-releases-2.0.27.tgz",
+      "integrity": "sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/normalize-path": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/normalize-path/-/normalize-path-3.0.0.tgz",
+      "integrity": "sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/object-assign": {
+      "version": "4.1.1",
+      "resolved": "https://registry.npmjs.org/object-assign/-/object-assign-4.1.1.tgz",
+      "integrity": "sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/object-hash": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/object-hash/-/object-hash-3.0.0.tgz",
+      "integrity": "sha512-RSn9F68PjH9HqtltsSnqYC1XXoWe9Bju5+213R98cNGttag9q9yAOTzdbsqvIa7aNm5WffBZFpWYr2aWrklWAw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/path-parse": {
+      "version": "1.0.7",
+      "resolved": "https://registry.npmjs.org/path-parse/-/path-parse-1.0.7.tgz",
+      "integrity": "sha512-LDJzPVEEEPR+y48z93A0Ed0yXb8pAByGWo/k5YYdYgpY2/2EsOsksJrq7lOHxryrVOn1ejG6oAp8ahvOIQD8sw==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/picocolors": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "license": "ISC"
+    },
+    "node_modules/picomatch": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
+      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/pify": {
+      "version": "2.3.0",
+      "resolved": "https://registry.npmjs.org/pify/-/pify-2.3.0.tgz",
+      "integrity": "sha512-udgsAY+fTnvv7kI7aaxbqwWNb0AHiB0qBO89PZKPkoTmGOgdbrHDKD+0B2X4uTfJ/FT1R09r9gTsjUjNJotuog==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/pirates": {
+      "version": "4.0.7",
+      "resolved": "https://registry.npmjs.org/pirates/-/pirates-4.0.7.tgz",
+      "integrity": "sha512-TfySrs/5nm8fQJDcBDuUng3VOUKsd7S+zqvbOTiGXHfxX4wK31ard+hoNuvkicM/2YFzlpDgABOevKSsB4G/FA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/postcss": {
+      "version": "8.5.6",
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.6.tgz",
+      "integrity": "sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/postcss"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "nanoid": "^3.3.11",
+        "picocolors": "^1.1.1",
+        "source-map-js": "^1.2.1"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      }
+    },
+    "node_modules/postcss-import": {
+      "version": "15.1.0",
+      "resolved": "https://registry.npmjs.org/postcss-import/-/postcss-import-15.1.0.tgz",
+      "integrity": "sha512-hpr+J05B2FVYUAXHeK1YyI267J/dDDhMU6B6civm8hSY1jYJnBXxzKDKDswzJmtLHryrjhnDjqqp/49t8FALew==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "postcss-value-parser": "^4.0.0",
+        "read-cache": "^1.0.0",
+        "resolve": "^1.1.7"
+      },
+      "engines": {
+        "node": ">=14.0.0"
+      },
+      "peerDependencies": {
+        "postcss": "^8.0.0"
+      }
+    },
+    "node_modules/postcss-js": {
+      "version": "4.1.0",
+      "resolved": "https://registry.npmjs.org/postcss-js/-/postcss-js-4.1.0.tgz",
+      "integrity": "sha512-oIAOTqgIo7q2EOwbhb8UalYePMvYoIeRY2YKntdpFQXNosSu3vLrniGgmH9OKs/qAkfoj5oB3le/7mINW1LCfw==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "camelcase-css": "^2.0.1"
+      },
+      "engines": {
+        "node": "^12 || ^14 || >= 16"
+      },
+      "peerDependencies": {
+        "postcss": "^8.4.21"
+      }
+    },
+    "node_modules/postcss-load-config": {
+      "version": "6.0.1",
+      "resolved": "https://registry.npmjs.org/postcss-load-config/-/postcss-load-config-6.0.1.tgz",
+      "integrity": "sha512-oPtTM4oerL+UXmx+93ytZVN82RrlY/wPUV8IeDxFrzIjXOLF1pN+EmKPLbubvKHT2HC20xXsCAH2Z+CKV6Oz/g==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "lilconfig": "^3.1.1"
+      },
+      "engines": {
+        "node": ">= 18"
+      },
+      "peerDependencies": {
+        "jiti": ">=1.21.0",
+        "postcss": ">=8.0.9",
+        "tsx": "^4.8.1",
+        "yaml": "^2.4.2"
+      },
+      "peerDependenciesMeta": {
+        "jiti": {
+          "optional": true
+        },
+        "postcss": {
+          "optional": true
+        },
+        "tsx": {
+          "optional": true
+        },
+        "yaml": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/postcss-nested": {
+      "version": "6.2.0",
+      "resolved": "https://registry.npmjs.org/postcss-nested/-/postcss-nested-6.2.0.tgz",
+      "integrity": "sha512-HQbt28KulC5AJzG+cZtj9kvKB93CFCdLvog1WFLf1D+xmMvPGlBstkpTEZfK5+AN9hfJocyBFCNiqyS48bpgzQ==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "postcss-selector-parser": "^6.1.1"
+      },
+      "engines": {
+        "node": ">=12.0"
+      },
+      "peerDependencies": {
+        "postcss": "^8.2.14"
+      }
+    },
+    "node_modules/postcss-selector-parser": {
+      "version": "6.1.2",
+      "resolved": "https://registry.npmjs.org/postcss-selector-parser/-/postcss-selector-parser-6.1.2.tgz",
+      "integrity": "sha512-Q8qQfPiZ+THO/3ZrOrO0cJJKfpYCagtMUkXbnEfmgUjwXg6z/WBeOyS9APBBPCTSiDV+s4SwQGu8yFsiMRIudg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "cssesc": "^3.0.0",
+        "util-deprecate": "^1.0.2"
+      },
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/postcss-value-parser": {
+      "version": "4.2.0",
+      "resolved": "https://registry.npmjs.org/postcss-value-parser/-/postcss-value-parser-4.2.0.tgz",
+      "integrity": "sha512-1NNCs6uurfkVbeXG4S8JFT9t19m45ICnif8zWLd5oPSZ50QnwMfK+H3jv408d4jw/7Bttv5axS5IiHoLaVNHeQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/queue-microtask": {
+      "version": "1.2.3",
+      "resolved": "https://registry.npmjs.org/queue-microtask/-/queue-microtask-1.2.3.tgz",
+      "integrity": "sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/feross"
+        },
+        {
+          "type": "patreon",
+          "url": "https://www.patreon.com/feross"
+        },
+        {
+          "type": "consulting",
+          "url": "https://feross.org/support"
+        }
+      ],
+      "license": "MIT"
+    },
+    "node_modules/react": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+      "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/react-dom": {
+      "version": "18.3.1",
+      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz",
+      "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0",
+        "scheduler": "^0.23.2"
+      },
+      "peerDependencies": {
+        "react": "^18.3.1"
+      }
+    },
+    "node_modules/react-leaflet": {
+      "version": "4.2.1",
+      "resolved": "https://registry.npmjs.org/react-leaflet/-/react-leaflet-4.2.1.tgz",
+      "integrity": "sha512-p9chkvhcKrWn/H/1FFeVSqLdReGwn2qmiobOQGO3BifX+/vV/39qhY8dGqbdcPh1e6jxh/QHriLXr7a4eLFK4Q==",
+      "license": "Hippocratic-2.1",
+      "dependencies": {
+        "@react-leaflet/core": "^2.1.0"
+      },
+      "peerDependencies": {
+        "leaflet": "^1.9.0",
+        "react": "^18.0.0",
+        "react-dom": "^18.0.0"
+      }
+    },
+    "node_modules/read-cache": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/read-cache/-/read-cache-1.0.0.tgz",
+      "integrity": "sha512-Owdv/Ft7IjOgm/i0xvNDZ1LrRANRfew4b2prF3OWMQLxLfu3bS8FVhCsrSCMK4lR56Y9ya+AThoTpDCTxCmpRA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "pify": "^2.3.0"
+      }
+    },
+    "node_modules/readdirp": {
+      "version": "3.6.0",
+      "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-3.6.0.tgz",
+      "integrity": "sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "picomatch": "^2.2.1"
+      },
+      "engines": {
+        "node": ">=8.10.0"
+      }
+    },
+    "node_modules/resolve": {
+      "version": "1.22.11",
+      "resolved": "https://registry.npmjs.org/resolve/-/resolve-1.22.11.tgz",
+      "integrity": "sha512-RfqAvLnMl313r7c9oclB1HhUEAezcpLjz95wFH4LVuhk9JF/r22qmVP9AMmOU4vMX7Q8pN8jwNg/CSpdFnMjTQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "is-core-module": "^2.16.1",
+        "path-parse": "^1.0.7",
+        "supports-preserve-symlinks-flag": "^1.0.0"
+      },
+      "bin": {
+        "resolve": "bin/resolve"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/reusify": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/reusify/-/reusify-1.1.0.tgz",
+      "integrity": "sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "iojs": ">=1.0.0",
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/run-parallel": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/run-parallel/-/run-parallel-1.2.0.tgz",
+      "integrity": "sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/feross"
+        },
+        {
+          "type": "patreon",
+          "url": "https://www.patreon.com/feross"
+        },
+        {
+          "type": "consulting",
+          "url": "https://feross.org/support"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "queue-microtask": "^1.2.2"
+      }
+    },
+    "node_modules/scheduler": {
+      "version": "0.23.2",
+      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.23.2.tgz",
+      "integrity": "sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==",
+      "license": "MIT",
+      "dependencies": {
+        "loose-envify": "^1.1.0"
+      }
+    },
+    "node_modules/source-map-js": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/streamsearch": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
+      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
+      "engines": {
+        "node": ">=10.0.0"
+      }
+    },
+    "node_modules/styled-jsx": {
+      "version": "5.1.1",
+      "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.1.tgz",
+      "integrity": "sha512-pW7uC1l4mBZ8ugbiZrcIsiIvVx1UmTfw7UkC3Um2tmfUq9Bhk8IiyEIPl6F8agHgjzku6j0xQEZbfA5uSgSaCw==",
+      "license": "MIT",
+      "dependencies": {
+        "client-only": "0.0.1"
+      },
+      "engines": {
+        "node": ">= 12.0.0"
+      },
+      "peerDependencies": {
+        "react": ">= 16.8.0 || 17.x.x || ^18.0.0-0"
+      },
+      "peerDependenciesMeta": {
+        "@babel/core": {
+          "optional": true
+        },
+        "babel-plugin-macros": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/sucrase": {
+      "version": "3.35.1",
+      "resolved": "https://registry.npmjs.org/sucrase/-/sucrase-3.35.1.tgz",
+      "integrity": "sha512-DhuTmvZWux4H1UOnWMB3sk0sbaCVOoQZjv8u1rDoTV0HTdGem9hkAZtl4JZy8P2z4Bg0nT+YMeOFyVr4zcG5Tw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/gen-mapping": "^0.3.2",
+        "commander": "^4.0.0",
+        "lines-and-columns": "^1.1.6",
+        "mz": "^2.7.0",
+        "pirates": "^4.0.1",
+        "tinyglobby": "^0.2.11",
+        "ts-interface-checker": "^0.1.9"
+      },
+      "bin": {
+        "sucrase": "bin/sucrase",
+        "sucrase-node": "bin/sucrase-node"
+      },
+      "engines": {
+        "node": ">=16 || 14 >=14.17"
+      }
+    },
+    "node_modules/supports-preserve-symlinks-flag": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz",
+      "integrity": "sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/tailwindcss": {
+      "version": "3.4.19",
+      "resolved": "https://registry.npmjs.org/tailwindcss/-/tailwindcss-3.4.19.tgz",
+      "integrity": "sha512-3ofp+LL8E+pK/JuPLPggVAIaEuhvIz4qNcf3nA1Xn2o/7fb7s/TYpHhwGDv1ZU3PkBluUVaF8PyCHcm48cKLWQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@alloc/quick-lru": "^5.2.0",
+        "arg": "^5.0.2",
+        "chokidar": "^3.6.0",
+        "didyoumean": "^1.2.2",
+        "dlv": "^1.1.3",
+        "fast-glob": "^3.3.2",
+        "glob-parent": "^6.0.2",
+        "is-glob": "^4.0.3",
+        "jiti": "^1.21.7",
+        "lilconfig": "^3.1.3",
+        "micromatch": "^4.0.8",
+        "normalize-path": "^3.0.0",
+        "object-hash": "^3.0.0",
+        "picocolors": "^1.1.1",
+        "postcss": "^8.4.47",
+        "postcss-import": "^15.1.0",
+        "postcss-js": "^4.0.1",
+        "postcss-load-config": "^4.0.2 || ^5.0 || ^6.0",
+        "postcss-nested": "^6.2.0",
+        "postcss-selector-parser": "^6.1.2",
+        "resolve": "^1.22.8",
+        "sucrase": "^3.35.0"
+      },
+      "bin": {
+        "tailwind": "lib/cli.js",
+        "tailwindcss": "lib/cli.js"
+      },
+      "engines": {
+        "node": ">=14.0.0"
+      }
+    },
+    "node_modules/thenify": {
+      "version": "3.3.1",
+      "resolved": "https://registry.npmjs.org/thenify/-/thenify-3.3.1.tgz",
+      "integrity": "sha512-RVZSIV5IG10Hk3enotrhvz0T9em6cyHBLkH/YAZuKqd8hRkKhSfCGIcP2KUY0EPxndzANBmNllzWPwak+bheSw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "any-promise": "^1.0.0"
+      }
+    },
+    "node_modules/thenify-all": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/thenify-all/-/thenify-all-1.6.0.tgz",
+      "integrity": "sha512-RNxQH/qI8/t3thXJDwcstUO4zeqo64+Uy/+sNVRBx4Xn2OX+OZ9oP+iJnNFqplFra2ZUVeKCSa2oVWi3T4uVmA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "thenify": ">= 3.1.0 < 4"
+      },
+      "engines": {
+        "node": ">=0.8"
+      }
+    },
+    "node_modules/tinyglobby": {
+      "version": "0.2.15",
+      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.15.tgz",
+      "integrity": "sha512-j2Zq4NyQYG5XMST4cbs02Ak8iJUdxRM0XI5QyxXuZOzKOINmWurp3smXu3y5wDcJrptwpSjgXHzIQxR0omXljQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "fdir": "^6.5.0",
+        "picomatch": "^4.0.3"
+      },
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/SuperchupuDev"
+      }
+    },
+    "node_modules/tinyglobby/node_modules/picomatch": {
+      "version": "4.0.3",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
+      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/to-regex-range": {
+      "version": "5.0.1",
+      "resolved": "https://registry.npmjs.org/to-regex-range/-/to-regex-range-5.0.1.tgz",
+      "integrity": "sha512-65P7iz6X5yEr1cwcgvQxbbIw7Uk3gOy5dIdtZ4rDveLqhrdJP+Li/Hx6tyK0NEb+2GCyneCMJiGqrADCSNk8sQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "is-number": "^7.0.0"
+      },
+      "engines": {
+        "node": ">=8.0"
+      }
+    },
+    "node_modules/ts-interface-checker": {
+      "version": "0.1.13",
+      "resolved": "https://registry.npmjs.org/ts-interface-checker/-/ts-interface-checker-0.1.13.tgz",
+      "integrity": "sha512-Y/arvbn+rrz3JCKl9C4kVNfTfSm2/mEp5FSz5EsZSANGPSlQrpRI5M4PKF+mJnE52jOO90PnPSc3Ur3bTQw0gA==",
+      "dev": true,
+      "license": "Apache-2.0"
+    },
+    "node_modules/tslib": {
+      "version": "2.8.1",
+      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+      "license": "0BSD"
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "6.21.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/update-browserslist-db": {
+      "version": "1.2.3",
+      "resolved": "https://registry.npmjs.org/update-browserslist-db/-/update-browserslist-db-1.2.3.tgz",
+      "integrity": "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w==",
+      "dev": true,
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/browserslist"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/browserslist"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "escalade": "^3.2.0",
+        "picocolors": "^1.1.1"
+      },
+      "bin": {
+        "update-browserslist-db": "cli.js"
+      },
+      "peerDependencies": {
+        "browserslist": ">= 4.21.0"
+      }
+    },
+    "node_modules/util-deprecate": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/util-deprecate/-/util-deprecate-1.0.2.tgz",
+      "integrity": "sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==",
+      "dev": true,
+      "license": "MIT"
+    }
+  }
+}
+
 
 
