@@ -1,201 +1,481 @@
 ﻿================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\app\map\[id]\page.tsx
+================================================================================
+
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import {
+  ArrowLeft, Leaf, MapPin, Package, Wheat, TrendingUp,
+  Users, BarChart2, Layers, AlertCircle,
+} from 'lucide-react';
+import ThemeToggle from '@/components/ThemeToggle';
+import type { MapLevel } from '@/types/api';
+import {
+  getRegion, getDepartement, getCommune,
+  getRegionProductions, getDepartementProductions, getCommuneProductions,
+  getRegionDepartements, getDepartementCommunes, getCommuneInfrastructures,
+  getRegionsGeoJSON, getDepartementsGeoJSON, getCommunesGeoJSON,
+  getProductions,
+} from '@/lib/api';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// ── Mini map rendered client-side only ──────────────────────────────────────
+const DetailMap = dynamic(() => import('@/components/DetailMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center rounded-xl">
+      <div className="inline-block w-10 h-10 border-3 border-green-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  ),
+});
+
+export default function DetailPage({ params }: { params: { id: string } }) {
+  const id          = Number(params.id);
+  const searchParams = useSearchParams();
+  const level       = (searchParams.get('level') || 'regions') as MapLevel;
+
+  const [entity,         setEntity]         = useState<any>(null);
+  const [productions,    setProductions]    = useState<any[]>([]);
+  const [children,       setChildren]       = useState<any[]>([]);   // dept / communes
+  const [infrastructures,setInfrastructures] = useState<any[]>([]);
+  const [geoData,        setGeoData]        = useState<any>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [error,          setError]          = useState<string | null>(null);
+
+  // ── Fetch everything in parallel ─────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      console.log(`📄 [DetailPage] Loading detail for id=${id} level=${level}`);
+      setLoading(true);
+      setError(null);
+
+      try {
+        let ent: any, prods: any[], kids: any[], infras: any[], geo: any;
+
+        switch (level) {
+          case 'regions': {
+            [ent, prods, kids, geo] = await Promise.all([
+              getRegion(id),
+              getRegionProductions(id),
+              getRegionDepartements(id),
+              getRegionsGeoJSON(),
+            ]);
+            infras = [];
+            break;
+          }
+          case 'departements': {
+            [ent, prods, kids, geo] = await Promise.all([
+              getDepartement(id),
+              getDepartementProductions(id),
+              getDepartementCommunes(id),
+              getDepartementsGeoJSON(),
+            ]);
+            infras = [];
+            break;
+          }
+          case 'communes': {
+            [ent, prods, infras, geo] = await Promise.all([
+              getCommune(id),
+              getCommuneProductions(id),
+              getCommuneInfrastructures(id),
+              getCommunesGeoJSON(),
+            ]);
+            kids = [];
+            break;
+          }
+          default:
+            throw new Error('Level inconnu');
+        }
+
+        if (cancelled) return;
+        setEntity(ent);
+        setProductions(Array.isArray(prods) ? prods : (prods?.items || []));
+        setChildren(Array.isArray(kids) ? kids : (kids?.items || []));
+        setInfrastructures(Array.isArray(infras) ? infras : (infras?.items || []));
+        setGeoData(geo);
+        console.log(`✅ [DetailPage] All data loaded for ${ent?.nom}`);
+      } catch (e: any) {
+        if (!cancelled) {
+          console.error('[DetailPage] fetch error', e);
+          setError(e.message || 'Erreur de chargement');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [id, level]);
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const fmt = (n: number | null | undefined) =>
+    n != null ? new Intl.NumberFormat('fr-FR').format(n) : '—';
+  const fmtFCFA = (n: number | null | undefined) =>
+    n != null ? `${new Intl.NumberFormat('fr-FR').format(n)} FCFA` : '—';
+
+  const totalQuantite = productions.reduce((s, p) => s + (p.quantite || 0), 0);
+  const totalValeur   = productions.reduce((s, p) => s + (p.valeur_fcfa || 0), 0);
+  const totalProducteurs = productions.reduce((s, p) => s + (p.nombre_producteurs || 0), 0);
+
+  const childLabel = level === 'regions' ? 'Départements' : level === 'departements' ? 'Communes' : '';
+  const infraIconMap: Record<string, string> = {
+    marché: '🏪', entrepôt: '🏭', coopérative: '🤝',
+    usine_transformation: '⚙️', point_collecte: '📦',
+  };
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-white dark:bg-gray-950 flex items-center justify-center p-6">
+        <div className="text-center max-w-md">
+          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Erreur</h2>
+          <p className="text-gray-500 dark:text-gray-400 mb-6">{error}</p>
+          <Link href="/map" className="inline-flex items-center gap-2 px-5 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-semibold transition-all">
+            <ArrowLeft className="w-4 h-4" /> Retour à la carte
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-30 bg-white/90 dark:bg-gray-950/90 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/map" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all">
+              <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+            </Link>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-gradient-to-br from-green-400 to-emerald-600 rounded-lg flex items-center justify-center">
+                <Leaf className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <span className="text-sm font-bold text-gray-900 dark:text-white">{loading ? '…' : entity?.nom}</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 ml-2 capitalize">({level.slice(0,-1)})</span>
+              </div>
+            </div>
+          </div>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {loading ? (
+        /* ── Skeleton ──────────────────────────────────────────────────── */
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-6">
+          <div className="h-64 bg-gray-200 dark:bg-gray-800 rounded-2xl animate-pulse" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[1,2,3,4].map(i => <div key={i} className="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />)}
+          </div>
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="h-48 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
+            <div className="h-48 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
+          </div>
+        </div>
+      ) : (
+        <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
+
+          {/* ── Map hero ──────────────────────────────────────────────── */}
+          <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '320px' }}>
+            <DetailMap geoData={geoData} targetId={id} />
+          </div>
+
+          {/* ── KPI cards ─────────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+            {[
+              { label: 'Population', value: fmt(entity?.population), icon: Users,    color: 'from-blue-400 to-blue-600',       delay: 'delay-50' },
+              { label: 'Superficie', value: entity?.superficie_km2 ? `${fmt(entity.superficie_km2)} km²` : '—', icon: Layers, color: 'from-emerald-400 to-emerald-600', delay: 'delay-100' },
+              { label: 'Quantité produite', value: fmt(totalQuantite), icon: TrendingUp, color: 'from-amber-400 to-amber-600', delay: 'delay-150' },
+              { label: 'Valeur totale', value: fmtFCFA(totalValeur), icon: BarChart2, color: 'from-purple-400 to-purple-600', delay: 'delay-200' },
+            ].map((kpi, i) => {
+              const Icon = kpi.icon;
+              return (
+                <div key={i} className={`anim-slideUp ${kpi.delay} bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-gray-800 hover:shadow-md transition-shadow`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${kpi.color} flex items-center justify-center`}>
+                      <Icon className="w-4.5 h-4.5 text-white" />
+                    </div>
+                  </div>
+                  <p className="text-lg font-display font-bold text-gray-900 dark:text-white truncate">{kpi.value}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{kpi.label}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── Entity info + Chef lieu ───────────────────────────────── */}
+          <div className="anim-slideUp delay-200 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+            <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-green-500" /> Informations générales
+            </h3>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
+              {entity && Object.entries(entity).map(([k, v]) => {
+                if (['id','created_at','updated_at'].includes(k) || v == null) return null;
+                return (
+                  <div key={k} className="flex flex-col">
+                    <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">{k.replace(/_/g,' ')}</span>
+                    <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      {Array.isArray(v) ? v.join(', ') : String(v)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Two-column: children + infrastructures ───────────────── */}
+          <div className="grid md:grid-cols-2 gap-4 lg:gap-6">
+            {/* Children (départements / communes) */}
+            {childLabel && (
+              <div className="anim-slideUp delay-250 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+                <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-green-500" /> {childLabel} <span className="text-green-500">({children.length})</span>
+                </h3>
+                {children.length === 0 ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune donnée disponible</p>
+                ) : (
+                  <div className="space-y-2 max-h-56 overflow-y-auto scrollbar-thin pr-1">
+                    {children.map((c: any, i: number) => (
+                      <div key={c.id || i} className={`anim-slideUp delay-${Math.min((i+1)*50, 500)} flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2`}>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{c.nom}</span>
+                        {c.population && <span className="text-xs text-gray-400 dark:text-gray-500">{fmt(c.population)} hab.</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Infrastructures */}
+            <div className="anim-slideUp delay-300 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+              <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <Package className="w-4 h-4 text-green-500" /> Infrastructures <span className="text-green-500">({infrastructures.length})</span>
+              </h3>
+              {infrastructures.length === 0 ? (
+                <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune infrastructure répertoriée</p>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto scrollbar-thin pr-1">
+                  {infrastructures.map((inf: any, i: number) => (
+                    <div key={inf.id || i} className="flex items-start gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2">
+                      <span className="text-lg">{infraIconMap[inf.type_infrastructure] || '🏗️'}</span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 truncate">{inf.nom}</p>
+                        {inf.type_infrastructure && <p className="text-xs text-gray-400 dark:text-gray-500 capitalize">{inf.type_infrastructure.replace(/_/g,' ')}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Productions table ────────────────────────────────────── */}
+          {productions.length > 0 && (
+            <div className="anim-slideUp delay-350 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+              <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <Wheat className="w-4 h-4 text-green-500" /> Productions <span className="text-green-500">({productions.length})</span>
+              </h3>
+              <div className="overflow-x-auto rounded-lg border border-gray-100 dark:border-gray-800">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-gray-800 text-left">
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Année</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Quantité</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Valeur (FCFA)</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Producteurs</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Saison</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productions.slice(0, 15).map((p: any, i: number) => (
+                      <tr key={p.id || i} className="border-t border-gray-100 dark:border-gray-800 hover:bg-green-50/40 dark:hover:bg-green-900/20 transition-colors">
+                        <td className="px-3 py-2 font-semibold text-gray-700 dark:text-gray-300">{p.annee}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmt(p.quantite)}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmtFCFA(p.valeur_fcfa)}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmt(p.nombre_producteurs)}</td>
+                        <td className="px-3 py-2 text-gray-500 dark:text-gray-500 capitalize">{p.saison || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── Producteurs summary ──────────────────────────────────── */}
+          {totalProducteurs > 0 && (
+            <div className="anim-slideUp delay-400 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl border border-green-200 dark:border-green-800 p-5 flex items-center gap-5">
+              <div className="w-14 h-14 rounded-full bg-green-100 dark:bg-green-800/40 flex items-center justify-center flex-shrink-0">
+                <Users className="w-7 h-7 text-green-600 dark:text-green-300" />
+              </div>
+              <div>
+                <p className="text-2xl font-display font-extrabold text-gray-900 dark:text-white">{fmt(totalProducteurs)}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Producteurs répertoriés dans cette zone</p>
+              </div>
+            </div>
+          )}
+        </main>
+      )}
+    </div>
+  );
+}
+
+
+================================================================================
 FICHIER: D:\5GI\Projet-TI\webmap\app\map\page.tsx
 ================================================================================
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { ArrowLeft, Leaf } from 'lucide-react';
+import { ArrowLeft, Leaf, BarChart3 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 import Sidebar from '@/components/Sidebar';
 import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
 import {
-  getRegionsGeoJSON,
-  getDepartementsGeoJSON,
-  getCommunesGeoJSON,
-  getRegion,
-  getDepartement,
-  getCommune,
-  getCommuneResume,
-  getRegionProductions,
-  getDepartementProductions,
-  getCommuneProductions,
+  getRegionsGeoJSON, getDepartementsGeoJSON, getCommunesGeoJSON,
+  getRegion, getDepartement, getCommuneResume,
+  getRegionProductions, getDepartementProductions,
 } from '@/lib/api';
 
-// Charger MapView dynamiquement (côté client uniquement)
 const MapView = dynamic(() => import('@/components/MapView'), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
       <div className="text-center">
-        <div className="inline-block w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="text-gray-600 dark:text-gray-400 font-medium">Chargement de la carte...</p>
+        <div className="inline-block w-14 h-14 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-3" />
+        <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement de la carte…</p>
       </div>
     </div>
   ),
 });
 
 export default function MapPage() {
-  const [mapLevel, setMapLevel] = useState<MapLevel>('regions');
-  const [geoData, setGeoData] = useState<GeoJSONFeatureCollection | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [selectedEntity, setSelectedEntity] = useState<any>(null);
+  const [mapLevel, setMapLevel]           = useState<MapLevel>('regions');
+  const [geoData, setGeoData]             = useState<GeoJSONFeatureCollection | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [selectedEntity, setSelectedEntity]   = useState<any>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | null>(null);
-  
-  // Filtres
+
   const [filters, setFilters] = useState({
-    filiere_id: null as number | null,
+    filiere_id  : null as number | null,
     categorie_id: null as number | null,
-    produit_id: null as number | null,
-    annee: null as number | null,
+    produit_id  : null as number | null,
+    annee       : null as number | null,
   });
 
-  // Charger les données géographiques au montage
-  useEffect(() => {
-    loadGeoData();
-  }, [mapLevel]);
-
-  // Recharger les données quand les filtres changent
-  useEffect(() => {
-    if (filters.filiere_id || filters.categorie_id || filters.produit_id) {
-      loadGeoData();
-    }
-  }, [filters]);
-
-  const loadGeoData = async () => {
+  // ── Load GeoJSON whenever level changes ──────────────────────────────────
+  const loadGeoData = useCallback(async () => {
+    console.log(`🗺️  [MapPage] Loading GeoJSON for level: ${mapLevel}`);
+    setLoading(true);
     try {
-      setLoading(true);
       let data: GeoJSONFeatureCollection;
-
       switch (mapLevel) {
-        case 'regions':
-          data = await getRegionsGeoJSON();
-          break;
-        case 'departements':
-          data = await getDepartementsGeoJSON();
-          break;
-        case 'communes':
-          data = await getCommunesGeoJSON();
-          break;
-        default:
-          data = await getRegionsGeoJSON();
+        case 'regions':      data = await getRegionsGeoJSON();      break;
+        case 'departements': data = await getDepartementsGeoJSON(); break;
+        case 'communes':     data = await getCommunesGeoJSON();     break;
+        default:             data = await getRegionsGeoJSON();
       }
-
       setGeoData(data);
-      console.log(`%c[MAP PAGE] Données GeoJSON chargées pour ${mapLevel}`, 'color: #22c55e; font-weight: bold', {
-        featuresCount: data.features.length,
-      });
-    } catch (error) {
-      console.error('Erreur lors du chargement des données GeoJSON:', error);
+      console.log(`✅ [MapPage] GeoJSON loaded — ${data.features.length} features`);
+    } catch (e) {
+      console.error('[MapPage] GeoJSON load failed', e);
     } finally {
       setLoading(false);
     }
-  };
+  }, [mapLevel]);
 
-  const handleFeatureClick = async (properties: any) => {
-    console.log('%c[MAP PAGE] Zone sélectionnée', 'color: #22c55e; font-weight: bold', properties);
-    
+  useEffect(() => { loadGeoData(); }, [loadGeoData]);
+
+  // ── Feature click → fetch detail + zoom ──────────────────────────────────
+  const handleFeatureClick = useCallback(async (properties: any) => {
+    console.log(`🖱️  [MapPage] Feature clicked`, properties);
+    setSelectedFeatureId(properties.id);
     try {
-      let entityData;
-      let productions;
-
+      let entityData: any;
       switch (mapLevel) {
-        case 'regions':
+        case 'regions': {
           entityData = await getRegion(properties.id);
           if (filters.produit_id || filters.annee) {
-            productions = await getRegionProductions(
-              properties.id,
-              filters.annee || undefined,
-              filters.produit_id || undefined
-            );
-            entityData = { ...entityData, productions };
+            const prods = await getRegionProductions(properties.id, filters.annee || undefined, filters.produit_id || undefined);
+            entityData = { ...entityData, productions: prods };
           }
           break;
-        case 'departements':
+        }
+        case 'departements': {
           entityData = await getDepartement(properties.id);
           if (filters.produit_id || filters.annee) {
-            productions = await getDepartementProductions(
-              properties.id,
-              filters.annee || undefined,
-              filters.produit_id || undefined
-            );
-            entityData = { ...entityData, productions };
+            const prods = await getDepartementProductions(properties.id, filters.annee || undefined, filters.produit_id || undefined);
+            entityData = { ...entityData, productions: prods };
           }
           break;
+        }
         case 'communes':
           entityData = await getCommuneResume(properties.id);
           break;
         default:
           entityData = properties;
       }
-
       setSelectedEntity(entityData);
-      setSelectedFeatureId(properties.id);
-    } catch (error) {
-      console.error('Erreur lors du chargement des détails:', error);
+    } catch (e) {
+      console.error('[MapPage] Detail fetch failed — fallback to properties', e);
       setSelectedEntity(properties);
-      setSelectedFeatureId(properties.id);
     }
-  };
+  }, [mapLevel, filters.produit_id, filters.annee]);
 
-  const handleFilterChange = (newFilters: any) => {
-    console.log('%c[MAP PAGE] Filtres mis à jour', 'color: #22c55e; font-weight: bold', newFilters);
-    setFilters(newFilters);
-  };
-
-  const handleMapLevelChange = (level: MapLevel) => {
-    console.log('%c[MAP PAGE] Niveau de carte changé', 'color: #22c55e; font-weight: bold', level);
+  const handleFilterChange  = useCallback((nf: any) => { setFilters(nf); }, []);
+  const handleMapLevelChange = useCallback((level: MapLevel) => {
     setMapLevel(level);
     setSelectedEntity(null);
     setSelectedFeatureId(null);
-  };
+  }, []);
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-950">
       {/* Header */}
       <header className="flex-shrink-0 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 z-10">
-        <div className="px-6 py-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-            <Link
-              href="/"
-              className="p-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all"
-              aria-label="Retour à l'accueil"
-            >
-              <ArrowLeft className="w-5 h-5 text-gray-700 dark:text-gray-300" />
+        <div className="px-4 md:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all">
+              <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-300" />
             </Link>
-            
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <div className="w-10 h-10 bg-gradient-to-br from-green-400 to-emerald-600 rounded-xl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Leaf className="w-6 h-6 text-white" />
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 bg-gradient-to-br from-green-400 to-emerald-600 rounded-xl flex items-center justify-center">
+                <Leaf className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-display font-bold text-gray-900 dark:text-white">
-                  AgriVision
-                </h1>
-                <p className="text-xs text-gray-600 dark:text-gray-400">
-                  Carte Interactive - {mapLevel.charAt(0).toUpperCase() + mapLevel.slice(1)}
-                </p>
+                <h1 className="text-base font-display font-bold text-gray-900 dark:text-white leading-tight">AgriVision</h1>
+                <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">{mapLevel}</p>
               </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <div className="px-4 py-2 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 rounded-lg">
-              <span className="text-sm font-medium">
-                {geoData ? `${geoData.features.length} zones` : 'Chargement...'}
-              </span>
+          <div className="flex items-center gap-2">
+            <Link href="/stats" className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-all">
+              <BarChart3 className="w-4 h-4" /> Stats
+            </Link>
+            <div className="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg">
+              <span className="text-xs font-semibold">{geoData ? `${geoData.features.length} zones` : '…'}</span>
             </div>
             <ThemeToggle />
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar */}
-        <div className="w-96 flex-shrink-0 overflow-hidden">
+        <div className="w-80 lg:w-96 flex-shrink-0 overflow-hidden border-r border-gray-200 dark:border-gray-800">
           <Sidebar
             onFilterChange={handleFilterChange}
             onMapLevelChange={handleMapLevelChange}
@@ -204,8 +484,8 @@ export default function MapPage() {
           />
         </div>
 
-        {/* Map Container */}
-        <div className="flex-1 p-6 overflow-hidden">
+        {/* Map */}
+        <div className="flex-1 p-3 md:p-5 overflow-hidden">
           <MapView
             geoData={geoData}
             loading={loading}
@@ -534,16 +814,15 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\globals.css
 @tailwind components;
 @tailwind utilities;
 
-
 @layer base {
   :root {
     --color-primary: 34 197 94;
   }
-  
+
   body {
     font-family: 'Open Sans', system-ui, sans-serif;
   }
-  
+
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Montserrat', system-ui, sans-serif;
   }
@@ -553,33 +832,29 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\globals.css
   .text-balance {
     text-wrap: balance;
   }
-  
+
   .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
-  
+
   .scrollbar-thin::-webkit-scrollbar-track {
     @apply bg-gray-100 dark:bg-gray-900;
   }
-  
+
   .scrollbar-thin::-webkit-scrollbar-thumb {
     @apply bg-gray-300 dark:bg-gray-700 rounded-full;
   }
-  
+
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     @apply bg-gray-400 dark:bg-gray-600;
   }
 }
 
-/* Animations personnalisées */
+/* ─── Shimmer ──────────────────────────────────────────────────────────────── */
 @keyframes shimmer {
-  0% {
-    background-position: -1000px 0;
-  }
-  100% {
-    background-position: 1000px 0;
-  }
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
 }
 
 .animate-shimmer {
@@ -593,7 +868,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\globals.css
   background-size: 2000px 100%;
 }
 
-/* Dark mode shimmer */
 .dark .animate-shimmer {
   background: linear-gradient(
     to right,
@@ -604,14 +878,132 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\globals.css
   background-size: 2000px 100%;
 }
 
-/* Leaflet map dark mode */
+/* ─── Page-level entrance animations ───────────────────────────────────────── */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideRight {
+  from { opacity: 0; transform: translateX(-24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideLeft {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.88); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes pulseGreen {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+  50%      { box-shadow: 0 0 0 8px rgba(34,197,94,0); }
+}
+@keyframes spinSlow {
+  to { transform: rotate(360deg); }
+}
+/* counter animation */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeInUp   { animation: fadeInUp   0.55s cubic-bezier(.22,.61,0,1) both; }
+.animate-fadeInDown { animation: fadeInDown 0.55s cubic-bezier(.22,.61,0,1) both; }
+.animate-fadeIn     { animation: fadeIn     0.45s ease both; }
+.animate-slideUp    { animation: slideUp    0.55s cubic-bezier(.22,.61,0,1) both; }
+.animate-slideDown  { animation: slideDown  0.55s cubic-bezier(.22,.61,0,1) both; }
+.animate-slideRight { animation: slideRight 0.5s  cubic-bezier(.22,.61,0,1) both; }
+.animate-slideLeft  { animation: slideLeft  0.5s  cubic-bezier(.22,.61,0,1) both; }
+.animate-scaleIn    { animation: scaleIn    0.4s  cubic-bezier(.22,.61,0,1) both; }
+.animate-pulseGreen { animation: pulseGreen 2s    ease-in-out infinite; }
+.animate-countUp    { animation: countUp    0.5s  cubic-bezier(.22,.61,0,1) both; }
+
+/* staggered delay helpers */
+.delay-50  { animation-delay: 50ms; }
+.delay-100 { animation-delay: 100ms; }
+.delay-150 { animation-delay: 150ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-250 { animation-delay: 250ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-350 { animation-delay: 350ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
+.delay-600 { animation-delay: 600ms; }
+
+/* ─── Leaflet dark-mode ────────────────────────────────────────────────────── */
 .dark .leaflet-container {
   background: #1a1a1a;
 }
-
 .dark .leaflet-tile {
   filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
 }
+
+/* ─── Card glass effect ────────────────────────────────────────────────────── */
+.glass-card {
+  background: rgba(255,255,255,0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.5);
+}
+.dark .glass-card {
+  background: rgba(20,24,34,0.72);
+  border-color: rgba(255,255,255,0.08);
+}
+
+/* ─── Gradient text helper ─────────────────────────────────────────────────── */
+.gradient-text-green {
+  background: linear-gradient(135deg, #22c55e, #10b981, #14b8a6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Tooltip & map overrides ──────────────────────────────────────────────── */
+.map-tooltip {
+  background: rgba(255,255,255,0.95) !important;
+  border: 2px solid #22c55e !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+  backdrop-filter: blur(4px) !important;
+  pointer-events: none !important;
+}
+.dark .map-tooltip {
+  background: rgba(31,41,55,0.95) !important;
+  border-color: #16a34a !important;
+  color: white !important;
+}
+.leaflet-control-attribution {
+  font-size: 10px !important;
+  background: rgba(255,255,255,0.7) !important;
+  padding: 2px 5px !important;
+}
+.dark .leaflet-control-attribution {
+  background: rgba(0,0,0,0.5) !important;
+  color: rgba(255,255,255,0.7) !important;
+}
+
+/* ─── Recharts responsive fix ──────────────────────────────────────────────── */
+.recharts-wrapper { width: 100% !important; }
 
 
 ================================================================================
@@ -710,7 +1102,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\components\MapView.tsx
 
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
@@ -736,41 +1128,43 @@ export default function MapView({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  // Initialiser la carte immédiatement au montage
+  // ✅ OPTIMISATION : stocker onFeatureClick dans un ref
+  // Ça évite de relancer le useEffect chaque fois que la fonction change
+  const onFeatureClickRef = useRef(onFeatureClick);
+  useEffect(() => {
+    onFeatureClickRef.current = onFeatureClick;
+  }, [onFeatureClick]);
+
+  // ─── Initialisation de la carte (une seule fois) ─────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     try {
-      // Configuration optimisée pour un chargement rapide
       const map = L.map(mapContainerRef.current, {
         center: [7.3697, 12.3547],
         zoom: 6,
         zoomControl: false,
-        preferCanvas: true, // Utiliser Canvas au lieu de SVG (plus rapide)
-        fadeAnimation: false, // Désactiver les animations de fade
+        preferCanvas: true,
+        fadeAnimation: false,
         zoomAnimation: true,
         markerZoomAnimation: false,
       });
 
-      // Ajouter le contrôle de zoom
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Tuiles optimisées avec cache
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
         maxZoom: 19,
         minZoom: 5,
-        updateWhenIdle: true, // Mettre à jour uniquement quand l'utilisateur arrête de zoomer
-        updateWhenZooming: false, // Ne pas mettre à jour pendant le zoom
-        keepBuffer: 2, // Garder plus de tuiles en cache
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 2,
       }).addTo(map);
 
       mapRef.current = map;
       setMapReady(true);
-
-      console.log('%c[MAP] ⚡ Carte initialisée rapidement', 'color: #22c55e; font-weight: bold');
     } catch (error) {
-      console.error('[MAP] Erreur:', error);
+      console.error('[MAP] Erreur d\'initialisation:', error);
     }
 
     return () => {
@@ -780,22 +1174,19 @@ export default function MapView({
         setMapReady(false);
       }
     };
-  }, []);
+  }, []); // ✅ Pas de dépendance — s'exécute une seule fois
 
-  // Mettre à jour les données GeoJSON avec optimisations
+  // ─── Mise à jour du GeoJSON sur la carte ──────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !mapReady || !geoData) return;
 
     // Supprimer l'ancienne couche
     if (geoJsonLayerRef.current) {
       mapRef.current.removeLayer(geoJsonLayerRef.current);
+      geoJsonLayerRef.current = null;
     }
 
-    console.log('%c[MAP] 📍 Chargement GeoJSON', 'color: #3b82f6', {
-      features: geoData.features.length,
-    });
-
-    // Style optimisé (fonction simple)
+    // ✅ Style calculé une seule fois pour la couche courante
     const getStyle = (feature: any) => {
       const isSelected = feature?.properties?.id === selectedFeatureId;
       return {
@@ -807,10 +1198,8 @@ export default function MapView({
       };
     };
 
-    // Créer la couche GeoJSON avec options de performance
     const geoJsonLayer = L.geoJSON(geoData, {
       style: getStyle,
-      // Utiliser onEachFeature de manière optimisée
       onEachFeature: (feature, layer) => {
         const props = feature.properties;
         if (!props) return;
@@ -825,43 +1214,46 @@ export default function MapView({
           opacity: 0.9,
         });
 
-        // Events optimisés
+        // ✅ On utilise le REF pour le callback — pas de re-rendu
         layer.on('click', () => {
-          if (onFeatureClick) {
-            onFeatureClick(props);
+          if (onFeatureClickRef.current) {
+            onFeatureClickRef.current(props);
           }
         });
 
-        // Hover effects légers
-        if (props.id !== selectedFeatureId) {
-          layer.on('mouseover', function() {
-            this.setStyle({ fillOpacity: 0.7, weight: 2 });
+        // Hover
+        layer.on('mouseover', function (this: L.GeoJSON) {
+          this.setStyle({ fillOpacity: 0.7, weight: 2 });
+        });
+        layer.on('mouseout', function (this: L.GeoJSON) {
+          const isSelected = props.id === selectedFeatureId;
+          this.setStyle({
+            fillOpacity: isSelected ? 0.7 : 0.5,
+            weight: isSelected ? 3 : 1,
           });
-          layer.on('mouseout', function() {
-            this.setStyle({ fillOpacity: 0.5, weight: 1 });
-          });
-        }
+        });
       },
     });
 
     geoJsonLayer.addTo(mapRef.current);
     geoJsonLayerRef.current = geoJsonLayer;
 
-    // Ajuster la vue rapidement
+    // Ajuster la vue sur les données
     try {
       const bounds = geoJsonLayer.getBounds();
       if (bounds.isValid()) {
-        mapRef.current.fitBounds(bounds, { 
+        mapRef.current.fitBounds(bounds, {
           padding: [50, 50],
-          animate: false, // Pas d'animation pour un ajustement instantané
+          animate: false,
         });
       }
     } catch (error) {
       console.error('[MAP] Erreur bounds:', error);
     }
-  }, [geoData, mapReady, selectedFeatureId, mapLevel, onFeatureClick]);
+  }, [geoData, mapReady, selectedFeatureId, mapLevel]);
+  // ✅ onFeatureClick n'est PLUS dans les dépendances
 
-  // Zoom optimisé sur sélection
+  // ─── Zoom sur la sélection ────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
 
@@ -870,18 +1262,18 @@ export default function MapView({
       if (feature?.properties?.id === selectedFeatureId) {
         const bounds = layer.getBounds();
         if (bounds.isValid()) {
-          mapRef.current!.fitBounds(bounds, { 
+          mapRef.current!.fitBounds(bounds, {
             padding: [100, 100],
             maxZoom: 10,
-            animate: true, // Animation seulement pour le zoom utilisateur
-            duration: 0.5,
+            animate: true,
+            duration: 0.4,
           });
         }
       }
     });
   }, [selectedFeatureId]);
 
-  // Afficher skeleton pendant le chargement
+  // ─── Rendu ────────────────────────────────────────────────────────────────
   if (loading) {
     return <SkeletonMap />;
   }
@@ -892,7 +1284,7 @@ export default function MapView({
         ref={mapContainerRef}
         className="w-full h-full rounded-xl overflow-hidden border-2 border-gray-200 dark:border-gray-800 shadow-2xl"
       />
-      
+
       {!geoData && !loading && mapReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-100/80 dark:bg-gray-900/80 rounded-xl backdrop-blur-sm pointer-events-none">
           <div className="text-center p-8">
@@ -907,11 +1299,9 @@ export default function MapView({
       )}
 
       <style jsx global>{`
-        /* Optimisations CSS pour performance */
         .leaflet-container {
           font-family: inherit;
         }
-        
         .map-tooltip {
           background: rgba(255, 255, 255, 0.95) !important;
           border: 2px solid #22c55e !important;
@@ -923,30 +1313,23 @@ export default function MapView({
           backdrop-filter: blur(4px) !important;
           pointer-events: none !important;
         }
-        
         .dark .map-tooltip {
           background: rgba(31, 41, 55, 0.95) !important;
           border-color: #16a34a !important;
           color: white !important;
         }
-        
-        /* Supprimer les attributions pour gagner de l'espace */
         .leaflet-control-attribution {
           font-size: 10px !important;
           background: rgba(255, 255, 255, 0.7) !important;
           padding: 2px 5px !important;
         }
-        
         .dark .leaflet-control-attribution {
           background: rgba(0, 0, 0, 0.5) !important;
           color: rgba(255, 255, 255, 0.7) !important;
         }
-        
-        /* Optimiser les transitions */
         .leaflet-tile {
           will-change: opacity;
         }
-        
         .leaflet-zoom-anim .leaflet-zoom-animated {
           will-change: transform;
         }
@@ -962,47 +1345,25 @@ FICHIER: D:\5GI\Projet-TI\webmap\components\Sidebar.tsx
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import {
-  Search,
-  Filter,
-  MapPin,
-  Layers,
-  TrendingUp,
-  X,
-  ChevronDown,
-  ChevronRight,
-  Wheat,
-  Package,
-  Calendar,
+  Search, Filter, MapPin, Layers, TrendingUp, X,
+  ChevronDown, ChevronRight, Wheat, Package, Calendar,
+  ExternalLink, Info,
 } from 'lucide-react';
-import type {
-  Filiere,
-  CategorieProduit,
-  Produit,
-  Region,
-  Departement,
-  Commune,
-  MapLevel,
-} from '@/types/api';
+import type { Filiere, CategorieProduit, Produit, MapLevel } from '@/types/api';
 import {
-  getFilieres,
-  getCategories,
-  getProduits,
-  searchFilieres,
-  searchProduits,
-  getRegions,
-  getDepartements,
-  getCommunes,
-  getAnneesDisponibles,
+  getFilieres, getCategories, getProduits,
+  searchFilieres, getAnneesDisponibles,
 } from '@/lib/api';
 import { SkeletonList } from './Skeleton';
 
 interface SidebarProps {
-  onFilterChange: (filters: any) => void;
-  onMapLevelChange: (level: MapLevel) => void;
-  selectedEntity: any;
-  currentMapLevel: MapLevel;
+  onFilterChange   : (filters: any) => void;
+  onMapLevelChange : (level: MapLevel) => void;
+  selectedEntity   : any;
+  currentMapLevel  : MapLevel;
 }
 
 export default function Sidebar({
@@ -1012,53 +1373,48 @@ export default function Sidebar({
   currentMapLevel,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'filters' | 'info'>('filters');
-  
-  // États pour les filtres
-  const [filieres, setFilieres] = useState<Filiere[]>([]);
+  const [activeTab, setActiveTab]     = useState<'filters' | 'info'>('filters');
+
+  const [filieres,   setFilieres]   = useState<Filiere[]>([]);
   const [categories, setCategories] = useState<CategorieProduit[]>([]);
-  const [produits, setProduits] = useState<Produit[]>([]);
-  const [annees, setAnnees] = useState<number[]>([]);
-  
-  // Sélections
-  const [selectedFiliere, setSelectedFiliere] = useState<number | null>(null);
+  const [produits,   setProduits]   = useState<Produit[]>([]);
+  const [annees,     setAnnees]     = useState<number[]>([]);
+
+  const [selectedFiliere,   setSelectedFiliere]   = useState<number | null>(null);
   const [selectedCategorie, setSelectedCategorie] = useState<number | null>(null);
-  const [selectedProduit, setSelectedProduit] = useState<number | null>(null);
-  const [selectedAnnee, setSelectedAnnee] = useState<number | null>(null);
-  
-  // Sections ouvertes/fermées
+  const [selectedProduit,   setSelectedProduit]   = useState<number | null>(null);
+  const [selectedAnnee,     setSelectedAnnee]     = useState<number | null>(null);
+
   const [openSections, setOpenSections] = useState({
-    filieres: true,
-    categories: false,
-    produits: false,
-    mapLevel: false,
-    annee: false,
+    filieres: true, categories: false, produits: false,
+    mapLevel: true, annee: false,
   });
-  
+
   const [loading, setLoading] = useState(false);
 
-  // Charger les filières au montage
-  useEffect(() => {
-    loadFilieres();
-    loadAnnees();
-  }, []);
+  const prevFiltersRef     = useRef({ filiere_id: null as number|null, categorie_id: null as number|null, produit_id: null as number|null, annee: null as number|null });
+  const onFilterChangeRef  = useRef(onFilterChange);
+  useEffect(() => { onFilterChangeRef.current = onFilterChange; }, [onFilterChange]);
 
-  // Charger les catégories quand une filière est sélectionnée
+  // ── Initial load ─────────────────────────────────────────────────────────
+  useEffect(() => { loadFilieres(); loadAnnees(); }, []);
+
+  // ── Cascade: filière → catégories ────────────────────────────────────────
   useEffect(() => {
     if (selectedFiliere) {
       loadCategories(selectedFiliere);
-      setOpenSections((prev) => ({ ...prev, categories: true }));
+      setOpenSections(p => ({ ...p, categories: true }));
     } else {
       setCategories([]);
       setSelectedCategorie(null);
     }
   }, [selectedFiliere]);
 
-  // Charger les produits quand une catégorie est sélectionnée
+  // ── Cascade: catégorie / filière → produits ──────────────────────────────
   useEffect(() => {
     if (selectedCategorie) {
       loadProduits(selectedCategorie, selectedFiliere);
-      setOpenSections((prev) => ({ ...prev, produits: true }));
+      setOpenSections(p => ({ ...p, produits: true }));
     } else if (selectedFiliere) {
       loadProduits(undefined, selectedFiliere);
     } else {
@@ -1067,187 +1423,146 @@ export default function Sidebar({
     }
   }, [selectedCategorie, selectedFiliere]);
 
-  // Notifier les changements de filtre
+  // ── Notify parent only on real change ────────────────────────────────────
   useEffect(() => {
-    onFilterChange({
-      filiere_id: selectedFiliere,
-      categorie_id: selectedCategorie,
-      produit_id: selectedProduit,
-      annee: selectedAnnee,
-    });
+    const nf = { filiere_id: selectedFiliere, categorie_id: selectedCategorie, produit_id: selectedProduit, annee: selectedAnnee };
+    const pv = prevFiltersRef.current;
+    if (pv.filiere_id !== nf.filiere_id || pv.categorie_id !== nf.categorie_id || pv.produit_id !== nf.produit_id || pv.annee !== nf.annee) {
+      prevFiltersRef.current = nf;
+      onFilterChangeRef.current(nf);
+    }
   }, [selectedFiliere, selectedCategorie, selectedProduit, selectedAnnee]);
 
+  // ── When entity selected → auto-switch to info tab ───────────────────────
+  useEffect(() => {
+    if (selectedEntity) setActiveTab('info');
+  }, [selectedEntity]);
+
+  // ── Loaders ──────────────────────────────────────────────────────────────
   const loadFilieres = async () => {
-    try {
-      setLoading(true);
-      const response = await getFilieres(0, 100);
-      setFilieres(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des filières:', error);
-    } finally {
-      setLoading(false);
-    }
+    try { setLoading(true); const r = await getFilieres(0, 100); setFilieres(r.items); }
+    catch (e) { console.error('loadFilieres', e); }
+    finally { setLoading(false); }
   };
-
-  const loadCategories = async (filiereId: number) => {
-    try {
-      const response = await getCategories(0, 100, filiereId);
-      setCategories(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des catégories:', error);
-    }
+  const loadCategories = async (fId: number) => {
+    try { const r = await getCategories(0, 100, fId); setCategories(r.items); }
+    catch (e) { console.error('loadCategories', e); }
   };
-
-  const loadProduits = async (categorieId?: number, filiereId?: number) => {
-    try {
-      const response = await getProduits(0, 100, categorieId, filiereId);
-      setProduits(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des produits:', error);
-    }
+  const loadProduits = async (cId?: number, fId?: number) => {
+    try { const r = await getProduits(0, 100, cId, fId); setProduits(r.items); }
+    catch (e) { console.error('loadProduits', e); }
   };
-
   const loadAnnees = async () => {
-    try {
-      const data = await getAnneesDisponibles();
-      setAnnees(data);
-    } catch (error) {
-      console.error('Erreur lors du chargement des années:', error);
-    }
+    try { const d = await getAnneesDisponibles(); setAnnees(d); }
+    catch (e) { console.error('loadAnnees', e); }
   };
 
   const handleSearch = async () => {
     if (searchQuery.trim().length < 2) return;
-
-    try {
-      setLoading(true);
-      const results = await searchFilieres(searchQuery, 10);
-      setFilieres(results);
-    } catch (error) {
-      console.error('Erreur lors de la recherche:', error);
-    } finally {
-      setLoading(false);
-    }
+    try { setLoading(true); setFilieres(await searchFilieres(searchQuery, 10)); }
+    catch (e) { console.error('handleSearch', e); }
+    finally { setLoading(false); }
   };
 
-  const toggleSection = (section: keyof typeof openSections) => {
-    setOpenSections((prev) => ({ ...prev, [section]: !prev[section] }));
-  };
+  const toggleSection = (s: keyof typeof openSections) =>
+    setOpenSections(p => ({ ...p, [s]: !p[s] }));
 
   const resetFilters = () => {
-    setSelectedFiliere(null);
-    setSelectedCategorie(null);
-    setSelectedProduit(null);
-    setSelectedAnnee(null);
+    setSelectedFiliere(null); setSelectedCategorie(null);
+    setSelectedProduit(null); setSelectedAnnee(null);
     setSearchQuery('');
     loadFilieres();
   };
 
-  const mapLevelOptions = [
-    { value: 'regions' as MapLevel, label: 'Régions', icon: MapPin },
-    { value: 'departements' as MapLevel, label: 'Départements', icon: Layers },
-    { value: 'communes' as MapLevel, label: 'Communes', icon: TrendingUp },
+  const mapLevelOptions: { value: MapLevel; label: string; icon: typeof MapPin }[] = [
+    { value: 'regions',      label: 'Régions',      icon: MapPin },
+    { value: 'departements', label: 'Départements', icon: Layers },
+    { value: 'communes',     label: 'Communes',     icon: TrendingUp },
   ];
 
+  // ── Detail URL helper ────────────────────────────────────────────────────
+  const detailUrl = selectedEntity
+    ? `/map/${selectedEntity.id}?level=${currentMapLevel}`
+    : '#';
+
+  // ── Shared button style ──────────────────────────────────────────────────
+  const btnBase = (active: boolean) =>
+    `w-full px-4 py-2.5 rounded-lg text-left transition-all duration-200 border-2 ${
+      active
+        ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-500 font-semibold'
+        : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-transparent hover:border-green-300 dark:hover:border-green-700 hover:bg-green-50/50 dark:hover:bg-green-900/20'
+    }`;
+
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800" style={{ animation: 'slideRight 0.5s ease-out' }}>
+    <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800">
       {/* Header */}
-      <div className="p-6 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-primary-50 to-white dark:from-gray-900 dark:to-gray-950">
-        <h2 className="text-2xl font-display font-bold text-gray-900 dark:text-white mb-2">
-          Filtres & Recherche
-        </h2>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Explorez les données agricoles du Cameroun
-        </p>
+      <div className="p-5 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-green-50 to-white dark:from-gray-900 dark:to-gray-950">
+        <h2 className="text-lg font-display font-bold text-gray-900 dark:text-white">Filtres &amp; Recherche</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Données agricoles du Cameroun</p>
       </div>
 
       {/* Tabs */}
       <div className="flex border-b border-gray-200 dark:border-gray-800">
-        <button
-          onClick={() => setActiveTab('filters')}
-          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
-            activeTab === 'filters'
-              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-        >
-          <Filter className="w-4 h-4" />
-          Filtres
-        </button>
-        <button
-          onClick={() => setActiveTab('info')}
-          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
-            activeTab === 'info'
-              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-        >
-          <MapPin className="w-4 h-4" />
-          Informations
-        </button>
+        {(['filters', 'info'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-1.5 ${
+              activeTab === tab
+                ? 'border-b-2 border-green-500 text-green-600 dark:text-green-400 bg-green-50/60 dark:bg-green-900/20'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+            }`}
+          >
+            {tab === 'filters' ? <Filter className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+            {tab === 'filters' ? 'Filtres' : 'Informations'}
+          </button>
+        ))}
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-4">
         {activeTab === 'filters' ? (
           <>
-            {/* Barre de recherche */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Search className="w-4 h-4" />
-                Recherche rapide
+            {/* Search */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                <Search className="w-3.5 h-3.5" /> Recherche rapide
               </label>
               <div className="relative">
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  placeholder="Rechercher une filière..."
-                  className="w-full px-4 py-3 pr-10 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-500 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                  style={{ animation: 'fadeIn 0.5s ease-in-out' }}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                  placeholder="Filière, produit…"
+                  className="w-full px-3 py-2 pr-9 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition-all"
                 />
-                <button
-                  onClick={handleSearch}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-gray-800 rounded-lg transition-all"
-                >
-                  <Search className="w-5 h-5" />
+                <button onClick={handleSearch} className="absolute right-2 top-1/2 -translate-y-1/2 text-green-600 dark:text-green-400 hover:opacity-70 transition-opacity">
+                  <Search className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Niveau de carte */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('mapLevel')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Layers className="w-4 h-4" />
-                  Niveau de visualisation
-                </span>
-                {openSections.mapLevel ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            {/* Niveau de visualisation */}
+            <div>
+              <button onClick={() => toggleSection('mapLevel')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Layers className="w-3.5 h-3.5" /> Niveau</span>
+                {openSections.mapLevel ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-              
               {openSections.mapLevel && (
-                <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
-                  {mapLevelOptions.map((option) => {
-                    const Icon = option.icon;
+                <div className="flex gap-2">
+                  {mapLevelOptions.map(opt => {
+                    const Icon = opt.icon;
+                    const active = currentMapLevel === opt.value;
                     return (
-                      <button
-                        key={option.value}
-                        onClick={() => onMapLevelChange(option.value)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          currentMapLevel === option.value
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', width: '100%' }}
-                      >
-                        <Icon className="w-5 h-5" />
-                        {option.label}
+                      <button key={opt.value} onClick={() => onMapLevelChange(opt.value)}
+                        className={`flex-1 py-2 rounded-lg text-center text-xs font-semibold transition-all border-2 flex flex-col items-center gap-0.5 ${
+                          active
+                            ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-500'
+                            : 'bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-transparent hover:border-green-300'
+                        }`}>
+                        <Icon className="w-4 h-4" />
+                        {opt.label}
                       </button>
                     );
                   })}
@@ -1256,81 +1571,40 @@ export default function Sidebar({
             </div>
 
             {/* Filières */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('filieres')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Wheat className="w-4 h-4" />
-                  Filières ({filieres.length})
-                </span>
-                {openSections.filieres ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            <div>
+              <button onClick={() => toggleSection('filieres')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Wheat className="w-3.5 h-3.5" /> Filières <span className="text-green-600 dark:text-green-400">({filieres.length})</span></span>
+                {openSections.filieres ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-              
               {openSections.filieres && (
-                <div className="space-y-2" style={{ animation: 'slideDown 0.3s ease-out' }}>
-                  {loading ? (
-                    <SkeletonList count={3} />
-                  ) : (
-                    filieres.map((filiere) => (
-                      <button
-                        key={filiere.id}
-                        onClick={() => setSelectedFiliere(filiere.id === selectedFiliere ? null : filiere.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedFiliere === filiere.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                          <div
-                            className="w-3 h-3 rounded-full"
-                            style={{ backgroundColor: filiere.couleur || '#22c55e', flexShrink: 0 }}
-                          />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="font-medium truncate">{filiere.nom}</div>
-                            {filiere.description && (
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {filiere.description}
-                              </div>
-                            )}
-                          </div>
+                <div className="space-y-1.5">
+                  {loading ? <SkeletonList count={3} /> : filieres.map(f => (
+                    <button key={f.id} onClick={() => setSelectedFiliere(f.id === selectedFiliere ? null : f.id)} className={btnBase(selectedFiliere === f.id)}>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: f.couleur || '#22c55e' }} />
+                        <div className="min-w-0">
+                          <div className="font-medium truncate text-sm">{f.nom}</div>
+                          {f.description && <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{f.description}</div>}
                         </div>
-                      </button>
-                    ))
-                  )}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
 
             {/* Catégories */}
             {selectedFiliere && categories.length > 0 && (
-              <div className="space-y-3">
-                <button
-                  onClick={() => toggleSection('categories')}
-                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Package className="w-4 h-4" />
-                    Catégories ({categories.length})
-                  </span>
-                  {openSections.categories ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              <div>
+                <button onClick={() => toggleSection('categories')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                  <span className="flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Catégories <span className="text-green-600 dark:text-green-400">({categories.length})</span></span>
+                  {openSections.categories ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </button>
-                
                 {openSections.categories && (
-                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
-                    {categories.map((categorie) => (
-                      <button
-                        key={categorie.id}
-                        onClick={() => setSelectedCategorie(categorie.id === selectedCategorie ? null : categorie.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedCategorie === categorie.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        {categorie.nom}
+                  <div className="space-y-1.5 pl-4 border-l-2 border-green-200 dark:border-green-800 ml-1.5">
+                    {categories.map(c => (
+                      <button key={c.id} onClick={() => setSelectedCategorie(c.id === selectedCategorie ? null : c.id)} className={btnBase(selectedCategorie === c.id)}>
+                        <span className="text-sm">{c.nom}</span>
                       </button>
                     ))}
                   </div>
@@ -1340,36 +1614,17 @@ export default function Sidebar({
 
             {/* Produits */}
             {produits.length > 0 && (
-              <div className="space-y-3">
-                <button
-                  onClick={() => toggleSection('produits')}
-                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Package className="w-4 h-4" />
-                    Produits ({produits.length})
-                  </span>
-                  {openSections.produits ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              <div>
+                <button onClick={() => toggleSection('produits')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                  <span className="flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Produits <span className="text-green-600 dark:text-green-400">({produits.length})</span></span>
+                  {openSections.produits ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </button>
-                
                 {openSections.produits && (
-                  <div className="space-y-2 pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
-                    {produits.slice(0, 10).map((produit) => (
-                      <button
-                        key={produit.id}
-                        onClick={() => setSelectedProduit(produit.id === selectedProduit ? null : produit.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedProduit === produit.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        <div className="font-medium">{produit.nom}</div>
-                        {produit.unite_mesure && (
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
-                            Unité: {produit.unite_mesure}
-                          </div>
-                        )}
+                  <div className="space-y-1.5 pl-4 border-l-2 border-green-100 dark:border-green-900 ml-1.5">
+                    {produits.slice(0, 12).map(p => (
+                      <button key={p.id} onClick={() => setSelectedProduit(p.id === selectedProduit ? null : p.id)} className={btnBase(selectedProduit === p.id)}>
+                        <div className="text-sm font-medium">{p.nom}</div>
+                        {p.unite_mesure && <div className="text-xs text-gray-400 dark:text-gray-500">Unité : {p.unite_mesure}</div>}
                       </button>
                     ))}
                   </div>
@@ -1378,75 +1633,72 @@ export default function Sidebar({
             )}
 
             {/* Année */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('annee')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Calendar className="w-4 h-4" />
-                  Année
-                </span>
-                {openSections.annee ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            <div>
+              <button onClick={() => toggleSection('annee')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Année</span>
+                {openSections.annee ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-              
               {openSections.annee && annees.length > 0 && (
-                <div className="pl-6" style={{ animation: 'slideDown 0.3s ease-out' }}>
-                  <select
-                    value={selectedAnnee || ''}
-                    onChange={(e) => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
-                    className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                  >
-                    <option value="">Toutes les années</option>
-                    {annees.map((annee) => (
-                      <option key={annee} value={annee}>
-                        {annee}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <select value={selectedAnnee || ''} onChange={e => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none">
+                  <option value="">Toutes les années</option>
+                  {annees.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
               )}
             </div>
 
-            {/* Reset Button */}
-            <button
-              onClick={resetFilters}
-              className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-900 hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg font-medium transition-all transform hover:scale-105"
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-            >
-              <X className="w-5 h-5" />
-              Réinitialiser les filtres
+            {/* Reset */}
+            <button onClick={resetFilters} className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-1.5">
+              <X className="w-4 h-4" /> Réinitialiser
             </button>
           </>
         ) : (
-          <div className="space-y-4">
+          /* ── Info tab ─────────────────────────────────────────────────────── */
+          <div className="space-y-3">
             {selectedEntity ? (
-              <div className="bg-gradient-to-br from-primary-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-6 border-2 border-primary-200 dark:border-primary-800" style={{ animation: 'fadeIn 0.5s ease-in-out' }}>
-                <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white mb-4">
-                  {selectedEntity.nom || 'Information'}
-                </h3>
-                
-                <div className="space-y-3">
-                  {Object.entries(selectedEntity).map(([key, value]) => {
-                    if (key === 'id' || key === 'created_at' || key === 'updated_at' || !value) return null;
-                    
-                    return (
-                      <div key={key} className="border-b border-gray-200 dark:border-gray-800 pb-2">
-                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">
-                          {key.replace(/_/g, ' ')}
+              <>
+                {/* Entity card */}
+                <div className="anim-slideUp bg-gradient-to-br from-green-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-5 border-2 border-green-200 dark:border-green-800">
+                  <div className="flex items-start justify-between mb-3">
+                    <h3 className="text-base font-display font-bold text-gray-900 dark:text-white">
+                      {selectedEntity.nom || 'Information'}
+                    </h3>
+                    <span className="text-xs bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-2 py-0.5 rounded-full font-semibold capitalize">
+                      {currentMapLevel.slice(0, -1)}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {Object.entries(selectedEntity).map(([key, value]) => {
+                      if (['id','created_at','updated_at'].includes(key) || !value) return null;
+                      if (key === 'nom') return null; // already shown as title
+                      return (
+                        <div key={key} className="flex items-baseline justify-between border-b border-gray-100 dark:border-gray-800 pb-1.5">
+                          <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">{key.replace(/_/g, ' ')}</span>
+                          <span className="text-sm text-gray-800 dark:text-gray-200 font-medium text-right max-w-[55%] truncate">
+                            {Array.isArray(value) ? value.join(', ') : String(value)}
+                          </span>
                         </div>
-                        <div className="text-sm text-gray-900 dark:text-white">
-                          {Array.isArray(value) ? value.join(', ') : String(value)}
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+
+                {/* Voir Plus button */}
+                <Link
+                  href={detailUrl}
+                  className="anim-slideUp delay-100 flex items-center justify-center gap-2.5 w-full px-5 py-3 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-[1.02]"
+                >
+                  <ExternalLink className="w-5 h-5" />
+                  Voir plus — Page détail
+                </Link>
+              </>
             ) : (
-              <div className="text-center py-12">
-                <MapPin className="w-16 h-16 mx-auto text-gray-300 dark:text-gray-700 mb-4" />
-                <p className="text-gray-600 dark:text-gray-400">
+              <div className="text-center py-16 anim-fadeIn">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                  <MapPin className="w-8 h-8 text-gray-300 dark:text-gray-600" />
+                </div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
                   Cliquez sur une zone de la carte pour voir ses informations
                 </p>
               </div>
@@ -1574,359 +1826,330 @@ export default function ThemeToggle() {
 
 
 ================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\components\DetailMap.tsx
+================================================================================
+
+'use client';
+
+import { useEffect, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+interface DetailMapProps {
+  geoData  : any;   // GeoJSONFeatureCollection
+  targetId : number;
+}
+
+export default function DetailMap({ geoData, targetId }: DetailMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef       = useRef<L.Map | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || !geoData) return;
+
+    // Destroy previous instance if any (strict-mode double-mount)
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+
+    const map = L.map(containerRef.current, {
+      center: [7.3697, 12.3547],
+      zoom: 6,
+      zoomControl: true,
+      preferCanvas: true,
+      fadeAnimation: true,
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 18,
+      minZoom: 4,
+    }).addTo(map);
+
+    let targetBounds: L.LatLngBounds | null = null;
+
+    L.geoJSON(geoData, {
+      style: (feature: any) => {
+        const isTarget = feature?.properties?.id === targetId;
+        return {
+          fillColor  : isTarget ? '#22c55e' : '#d1fae5',
+          weight     : isTarget ? 3.5 : 1,
+          opacity    : 1,
+          color      : isTarget ? '#15803d' : '#86efac',
+          fillOpacity: isTarget ? 0.65 : 0.25,
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const name = feature.properties?.nom || feature.properties?.name || '';
+        if (name) {
+          layer.bindTooltip(name, {
+            permanent: feature.properties?.id === targetId,
+            direction: 'center',
+            className: 'map-tooltip',
+          });
+        }
+        if (feature.properties?.id === targetId) {
+          try {
+            targetBounds = (layer as any).getBounds();
+          } catch (_) {}
+        }
+      },
+    }).addTo(map);
+
+    // Zoom into target
+    if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
+      map.fitBounds(targetBounds as L.LatLngBounds, { padding: [30, 30], maxZoom: 12, animate: true, duration: 0.8 });
+    }
+
+    mapRef.current = map;
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [geoData, targetId]);
+
+  return <div ref={containerRef} className="w-full h-full" />;
+}
+
+
+================================================================================
 FICHIER: D:\5GI\Projet-TI\webmap\lib\api.ts
 ================================================================================
 
-// Service API avec logging détaillé
+// ─── Service API avec cache en mémoire + console logging ────────────────────
 import type {
-  Region,
-  Departement,
-  Commune,
-  Filiere,
-  CategorieProduit,
-  Produit,
-  Production,
-  Infrastructure,
-  ApiResponse,
-  GeoJSONFeatureCollection,
-  StatistiquesGlobales,
+  Region, Departement, Commune, Filiere, CategorieProduit, Produit,
+  Production, Infrastructure, ApiResponse, GeoJSONFeatureCollection,
+  StatistiquesGlobales, ZoneHalieutique, BassinProduction, SourceDonnees,
 } from '@/types/api';
 
 const API_BASE_URL = 'https://apiti.onrender.com';
 
-// Fonction de logging
-const logApiCall = (endpoint: string, method: string = 'GET', response?: any, error?: any) => {
-  const timestamp = new Date().toISOString();
-  const url = `${API_BASE_URL}${endpoint}`;
-  
-  console.group(`%c[API Call] ${method} ${endpoint}`, 'color: #22c55e; font-weight: bold');
-  console.log('🕐 Timestamp:', timestamp);
-  console.log('🔗 URL:', url);
-  console.log('📋 Method:', method);
-  
-  if (response) {
-    console.log('✅ Response:', response);
-  }
-  
-  if (error) {
-    console.error('❌ Error:', error);
-  }
-  
-  console.groupEnd();
-};
+// ─── Cache (TTL 5 min) ───────────────────────────────────────────────────────
+const CACHE_TTL = 5 * 60 * 1000;
+interface CacheEntry<T> { data: T; timestamp: number; }
+const cache = new Map<string, CacheEntry<any>>();
 
-// Fonction générique pour les appels API
-async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`;
-  
+function getFromCache<T>(key: string): T | null {
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.timestamp > CACHE_TTL) { cache.delete(key); return null; }
+  return e.data as T;
+}
+function setInCache<T>(key: string, data: T) { cache.set(key, { data, timestamp: Date.now() }); }
+
+// ─── Core fetch + logging ────────────────────────────────────────────────────
+async function fetchAPI<T>(endpoint: string, options?: RequestInit & { useCache?: boolean }): Promise<T> {
+  const url      = `${API_BASE_URL}${endpoint}`;
+  const useCache = options?.useCache ?? false;
+
+  if (useCache) {
+    const cached = getFromCache<T>(endpoint);
+    if (cached) {
+      console.log('%c[API CACHE HIT] %c' + endpoint, 'color:#10b981;font-weight:700', 'color:#6b7280');
+      return cached;
+    }
+  }
+
+  console.log('%c[API →] %c' + endpoint, 'color:#3b82f6;font-weight:700', 'color:#6b7280');
+  const start = performance.now();
+
   try {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      },
-    });
+    const { useCache: _, ...fetchOpts } = options || {};
+    const response = await fetch(url, { ...fetchOpts, headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
+    const elapsed = (performance.now() - start).toFixed(1);
 
     if (!response.ok) {
-      const errorText = await response.text();
-      logApiCall(endpoint, options?.method || 'GET', null, { status: response.status, message: errorText });
-      throw new Error(`API Error: ${response.status} - ${errorText}`);
+      const errText = await response.text();
+      console.error('%c[API ✕] %c' + endpoint + ' — ' + response.status, 'color:#ef4444;font-weight:700', 'color:#6b7280', errText);
+      throw new Error(`API Error: ${response.status} - ${errText}`);
     }
 
     const data = await response.json();
-    logApiCall(endpoint, options?.method || 'GET', data);
-    
+    console.log('%c[API ✓] %c' + endpoint + ' %c(' + elapsed + ' ms)', 'color:#22c55e;font-weight:700', 'color:#6b7280', 'color:#9ca3af', data);
+    if (useCache) setInCache(endpoint, data);
     return data;
   } catch (error) {
-    logApiCall(endpoint, options?.method || 'GET', null, error);
+    console.error('%c[API ✕] %c' + endpoint, 'color:#ef4444;font-weight:700', 'color:#6b7280', error);
     throw error;
   }
 }
 
-// ========== RÉGIONS ==========
-export const getRegions = (skip: number = 0, limit: number = 100) =>
-  fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`);
-
-export const searchRegions = (query: string, limit: number = 10) =>
-  fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(query)}&limit=${limit}`);
-
-export const getRegion = (regionId: number) =>
-  fetchAPI<Region>(`/api/v1/regions/${regionId}`);
-
-export const getRegionDepartements = (regionId: number) =>
-  fetchAPI<Departement[]>(`/api/v1/regions/${regionId}/departements`);
-
-export const getRegionProductions = (
-  regionId: number,
-  annee?: number,
-  produitId?: number,
-  limit: number = 100
-) => {
-  let url = `/api/v1/regions/${regionId}/productions?limit=${limit}`;
-  if (annee) url += `&annee=${annee}`;
-  if (produitId) url += `&produit_id=${produitId}`;
-  return fetchAPI<Production[]>(url);
+// ─── RÉGIONS ─────────────────────────────────────────────────────────────────
+export const getRegions            = (skip=0, limit=100) => fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`, {useCache:true});
+export const searchRegions         = (q:string, limit=10) => fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const getRegion             = (id:number) => fetchAPI<Region>(`/api/v1/regions/${id}`, {useCache:true});
+export const getRegionDepartements = (id:number) => fetchAPI<Departement[]>(`/api/v1/regions/${id}/departements`, {useCache:true});
+export const getRegionProductions  = (id:number, annee?:number, produitId?:number, limit=100) => {
+  let u = `/api/v1/regions/${id}/productions?limit=${limit}`;
+  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(u);
 };
 
-// ========== DÉPARTEMENTS ==========
-export const getDepartements = (skip: number = 0, limit: number = 100, regionId?: number) => {
-  let url = `/api/v1/departements/?skip=${skip}&limit=${limit}`;
-  if (regionId) url += `&region_id=${regionId}`;
-  return fetchAPI<ApiResponse<Departement>>(url);
+// ─── DÉPARTEMENTS ───────────────────────────────────────────────────────────
+export const getDepartements = (skip=0, limit=100, regionId?:number) => {
+  let u = `/api/v1/departements/?skip=${skip}&limit=${limit}`;
+  if(regionId) u+=`&region_id=${regionId}`;
+  return fetchAPI<ApiResponse<Departement>>(u, {useCache:true});
+};
+export const searchDepartements       = (q:string, limit=10) => fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const getDepartement           = (id:number) => fetchAPI<Departement>(`/api/v1/departements/${id}`, {useCache:true});
+export const getDepartementCommunes   = (id:number) => fetchAPI<Commune[]>(`/api/v1/departements/${id}/communes`, {useCache:true});
+export const getDepartementProductions = (id:number, annee?:number, produitId?:number, limit=100) => {
+  let u = `/api/v1/departements/${id}/productions?limit=${limit}`;
+  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(u);
 };
 
-export const searchDepartements = (query: string, limit: number = 10) =>
-  fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+// ─── COMMUNES ────────────────────────────────────────────────────────────────
+export const getCommunes = (skip=0, limit=100, deptId?:number, type?:string) => {
+  let u = `/api/v1/communes/?skip=${skip}&limit=${limit}`;
+  if(deptId) u+=`&departement_id=${deptId}`; if(type) u+=`&type_commune=${type}`;
+  return fetchAPI<ApiResponse<Commune>>(u, {useCache:true});
+};
+export const searchCommunes           = (q:string, limit=10, deptId?:number) => {
+  let u = `/api/v1/communes/search?q=${encodeURIComponent(q)}&limit=${limit}`;
+  if(deptId) u+=`&departement_id=${deptId}`;
+  return fetchAPI<Commune[]>(u);
+};
+export const getCommune               = (id:number) => fetchAPI<Commune>(`/api/v1/communes/${id}`, {useCache:true});
+export const getCommuneInfrastructures= (id:number) => fetchAPI<Infrastructure[]>(`/api/v1/communes/${id}/infrastructures`, {useCache:true});
+export const getCommuneProductions    = (id:number, annee?:number, produitId?:number, limit=100) => {
+  let u = `/api/v1/communes/${id}/productions?limit=${limit}`;
+  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  return fetchAPI<Production[]>(u);
+};
+export const getCommuneResume         = (id:number) => fetchAPI<any>(`/api/v1/communes/${id}/resume`, {useCache:true});
 
-export const getDepartement = (departementId: number) =>
-  fetchAPI<Departement>(`/api/v1/departements/${departementId}`);
+// ─── FILIÈRES ────────────────────────────────────────────────────────────────
+export const getFilieres         = (skip=0, limit=100) => fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`, {useCache:true});
+export const searchFilieres      = (q:string, limit=10) => fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const getFiliere          = (id:number) => fetchAPI<Filiere>(`/api/v1/filieres/${id}`, {useCache:true});
+export const getFiliereCategories= (id:number) => fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${id}/categories`, {useCache:true});
+export const getFiliereProduits  = (id:number) => fetchAPI<Produit[]>(`/api/v1/filieres/${id}/produits`, {useCache:true});
 
-export const getDepartementCommunes = (departementId: number) =>
-  fetchAPI<Commune[]>(`/api/v1/departements/${departementId}/communes`);
+// ─── CATÉGORIES ──────────────────────────────────────────────────────────────
+export const getCategories = (skip=0, limit=100, filiereId?:number) => {
+  let u = `/api/v1/categories/?skip=${skip}&limit=${limit}`;
+  if(filiereId) u+=`&filiere_id=${filiereId}`;
+  return fetchAPI<ApiResponse<CategorieProduit>>(u, {useCache:true});
+};
+export const getCategorie        = (id:number) => fetchAPI<CategorieProduit>(`/api/v1/categories/${id}`, {useCache:true});
+export const getCategorieProduits= (id:number) => fetchAPI<Produit[]>(`/api/v1/categories/${id}/produits`, {useCache:true});
 
-export const getDepartementProductions = (
-  departementId: number,
-  annee?: number,
-  produitId?: number,
-  limit: number = 100
-) => {
-  let url = `/api/v1/departements/${departementId}/productions?limit=${limit}`;
-  if (annee) url += `&annee=${annee}`;
-  if (produitId) url += `&produit_id=${produitId}`;
-  return fetchAPI<Production[]>(url);
+// ─── PRODUITS ────────────────────────────────────────────────────────────────
+export const getProduits = (skip=0, limit=100, catId?:number, filId?:number) => {
+  let u = `/api/v1/produits/?skip=${skip}&limit=${limit}`;
+  if(catId) u+=`&categorie_id=${catId}`; if(filId) u+=`&filiere_id=${filId}`;
+  return fetchAPI<ApiResponse<Produit>>(u, {useCache:true});
+};
+export const searchProduits = (q:string, limit=10, catId?:number, filId?:number) => {
+  let u = `/api/v1/produits/search?q=${encodeURIComponent(q)}&limit=${limit}`;
+  if(catId) u+=`&categorie_id=${catId}`; if(filId) u+=`&filiere_id=${filId}`;
+  return fetchAPI<Produit[]>(u);
+};
+export const getProduit       = (id:number) => fetchAPI<Produit>(`/api/v1/produits/${id}`, {useCache:true});
+export const getProduitResume = (id:number, annee?:number) => {
+  let u = `/api/v1/produits/${id}/resume`; if(annee) u+=`?annee=${annee}`;
+  return fetchAPI<any>(u);
 };
 
-// ========== COMMUNES ==========
-export const getCommunes = (
-  skip: number = 0,
-  limit: number = 100,
-  departementId?: number,
-  typeCommune?: string
-) => {
-  let url = `/api/v1/communes/?skip=${skip}&limit=${limit}`;
-  if (departementId) url += `&departement_id=${departementId}`;
-  if (typeCommune) url += `&type_commune=${typeCommune}`;
-  return fetchAPI<ApiResponse<Commune>>(url);
+// ─── PRODUCTIONS ─────────────────────────────────────────────────────────────
+export const getProductions = (params: Record<string,any>) => {
+  const sp = new URLSearchParams();
+  Object.entries(params).forEach(([k,v])=>{ if(v!=null) sp.append(k,String(v)); });
+  return fetchAPI<ApiResponse<Production>>(`/api/v1/productions/?${sp}`);
+};
+export const getAnneesDisponibles   = () => fetchAPI<number[]>(`/api/v1/productions/annees`, {useCache:true});
+export const getSaisonsDisponibles  = () => fetchAPI<string[]>(`/api/v1/productions/saisons`, {useCache:true});
+export const getProductionsResume   = (annee?:number) => fetchAPI<any>(`/api/v1/productions/resume${annee?'?annee='+annee:''}`);
+export const getProductionsParAnnee = (produitId?:number, regionId?:number, anneeDebut?:number, anneeFin?:number) => {
+  const p = new URLSearchParams();
+  if(produitId) p.append('produit_id',String(produitId));
+  if(regionId)  p.append('region_id',String(regionId));
+  if(anneeDebut)p.append('annee_debut',String(anneeDebut));
+  if(anneeFin)  p.append('annee_fin',String(anneeFin));
+  return fetchAPI<any>(`/api/v1/productions/par-annee${p.toString()?'?'+p:''}`);
+};
+export const getProductionsParRegion  = (annee?:number, produitId?:number) => {
+  const p=new URLSearchParams(); if(annee) p.append('annee',String(annee)); if(produitId) p.append('produit_id',String(produitId));
+  return fetchAPI<any>(`/api/v1/productions/par-region${p.toString()?'?'+p:''}`);
+};
+export const getProductionsParProduit = (annee?:number, regionId?:number) => {
+  const p=new URLSearchParams(); if(annee) p.append('annee',String(annee)); if(regionId) p.append('region_id',String(regionId));
+  return fetchAPI<any>(`/api/v1/productions/par-produit${p.toString()?'?'+p:''}`);
 };
 
-export const searchCommunes = (query: string, limit: number = 10, departementId?: number) => {
-  let url = `/api/v1/communes/search?q=${encodeURIComponent(query)}&limit=${limit}`;
-  if (departementId) url += `&departement_id=${departementId}`;
-  return fetchAPI<Commune[]>(url);
+// ─── BASSINS ─────────────────────────────────────────────────────────────────
+export const getBassins = (skip=0,limit=100,filId?:number) => {
+  let u=`/api/v1/bassins/?skip=${skip}&limit=${limit}`; if(filId) u+=`&filiere_id=${filId}`;
+  return fetchAPI<ApiResponse<BassinProduction>>(u,{useCache:true});
+};
+export const searchBassins        = (q:string,limit=10) => fetchAPI<BassinProduction[]>(`/api/v1/bassins/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const getBassin            = (id:number) => fetchAPI<BassinProduction>(`/api/v1/bassins/${id}`,{useCache:true});
+export const getBassinGeoJSON     = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/${id}/geojson`,{useCache:true});
+export const getBassinsFilierGeoJSON=(id:number)=> fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/filiere/${id}/geojson`,{useCache:true});
+
+// ─── ZONES HALIEUTIQUES ──────────────────────────────────────────────────────
+export const getZonesHalieutiques = (skip=0,limit=100,type?:string) => {
+  let u=`/api/v1/zones-halieutiques/?skip=${skip}&limit=${limit}`; if(type) u+=`&type_zone=${type}`;
+  return fetchAPI<ApiResponse<ZoneHalieutique>>(u,{useCache:true});
+};
+export const getTypesZones              = () => fetchAPI<string[]>(`/api/v1/zones-halieutiques/types`,{useCache:true});
+export const getZoneHalieutique         = (id:number) => fetchAPI<ZoneHalieutique>(`/api/v1/zones-halieutiques/${id}`,{useCache:true});
+export const getZoneHalieutiqueGeoJSON  = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/zones-halieutiques/${id}/geojson`,{useCache:true});
+
+// ─── INFRASTRUCTURES ────────────────────────────────────────────────────────
+export const getInfrastructures = (skip=0,limit=100,type?:string,communeId?:number) => {
+  let u=`/api/v1/infrastructures/?skip=${skip}&limit=${limit}`;
+  if(type) u+=`&type_infrastructure=${type}`; if(communeId) u+=`&commune_id=${communeId}`;
+  return fetchAPI<ApiResponse<Infrastructure>>(u,{useCache:true});
+};
+export const getTypesInfrastructures  = () => fetchAPI<string[]>(`/api/v1/infrastructures/types`,{useCache:true});
+export const getStatsInfrastructures  = () => fetchAPI<any>(`/api/v1/infrastructures/stats`,{useCache:true});
+export const getInfrastructure        = (id:number) => fetchAPI<Infrastructure>(`/api/v1/infrastructures/${id}`,{useCache:true});
+export const getInfrastructureGeoJSON = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/infrastructures/${id}/geojson`,{useCache:true});
+
+// ─── STATISTIQUES ────────────────────────────────────────────────────────────
+export const getStatistiquesGlobales  = () => fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`,{useCache:true});
+export const getStatistiquesProduction= (annee?:number) => fetchAPI<any>(`/api/v1/statistiques/production${annee?'?annee='+annee:''}`);
+export const getEvolutionProduction   = (produitId?:number,regionId?:number,anneeDebut?:number,anneeFin?:number) => {
+  const p=new URLSearchParams();
+  if(produitId) p.append('produit_id',String(produitId)); if(regionId) p.append('region_id',String(regionId));
+  if(anneeDebut) p.append('annee_debut',String(anneeDebut)); if(anneeFin) p.append('annee_fin',String(anneeFin));
+  return fetchAPI<any>(`/api/v1/statistiques/evolution${p.toString()?'?'+p:''}`);
+};
+export const getTopRegions = (annee?:number,produitId?:number,limit=10) => {
+  let u=`/api/v1/statistiques/top-regions?limit=${limit}`;
+  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  return fetchAPI<any>(u);
+};
+export const getTopProduits = (annee?:number,regionId?:number,limit=10) => {
+  let u=`/api/v1/statistiques/top-produits?limit=${limit}`;
+  if(annee) u+=`&annee=${annee}`; if(regionId) u+=`&region_id=${regionId}`;
+  return fetchAPI<any>(u);
+};
+export const comparerAnnees = (ref:number,cmp:number,produitId?:number,regionId?:number) => {
+  let u=`/api/v1/statistiques/comparaison/annees?annee_reference=${ref}&annee_comparaison=${cmp}`;
+  if(produitId) u+=`&produit_id=${produitId}`; if(regionId) u+=`&region_id=${regionId}`;
+  return fetchAPI<any>(u);
 };
 
-export const getCommune = (communeId: number) =>
-  fetchAPI<Commune>(`/api/v1/communes/${communeId}`);
+// ─── SOURCES ─────────────────────────────────────────────────────────────────
+export const getSources = (skip=0,limit=100) => fetchAPI<ApiResponse<SourceDonnees>>(`/api/v1/sources/?skip=${skip}&limit=${limit}`,{useCache:true});
+export const getSource  = (id:number) => fetchAPI<SourceDonnees>(`/api/v1/sources/${id}`,{useCache:true});
 
-export const getCommuneInfrastructures = (communeId: number) =>
-  fetchAPI<Infrastructure[]>(`/api/v1/communes/${communeId}/infrastructures`);
-
-export const getCommuneProductions = (
-  communeId: number,
-  annee?: number,
-  produitId?: number,
-  limit: number = 100
-) => {
-  let url = `/api/v1/communes/${communeId}/productions?limit=${limit}`;
-  if (annee) url += `&annee=${annee}`;
-  if (produitId) url += `&produit_id=${produitId}`;
-  return fetchAPI<Production[]>(url);
-};
-
-export const getCommuneResume = (communeId: number) =>
-  fetchAPI<any>(`/api/v1/communes/${communeId}/resume`);
-
-// ========== FILIÈRES ==========
-export const getFilieres = (skip: number = 0, limit: number = 100) =>
-  fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`);
-
-export const searchFilieres = (query: string, limit: number = 10) =>
-  fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(query)}&limit=${limit}`);
-
-export const getFiliere = (filiereId: number) =>
-  fetchAPI<Filiere>(`/api/v1/filieres/${filiereId}`);
-
-export const getFiliereCategories = (filiereId: number) =>
-  fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${filiereId}/categories`);
-
-export const getFiliereProduits = (filiereId: number) =>
-  fetchAPI<Produit[]>(`/api/v1/filieres/${filiereId}/produits`);
-
-// ========== CATÉGORIES ==========
-export const getCategories = (skip: number = 0, limit: number = 100, filiereId?: number) => {
-  let url = `/api/v1/categories/?skip=${skip}&limit=${limit}`;
-  if (filiereId) url += `&filiere_id=${filiereId}`;
-  return fetchAPI<ApiResponse<CategorieProduit>>(url);
-};
-
-export const getCategorie = (categorieId: number) =>
-  fetchAPI<CategorieProduit>(`/api/v1/categories/${categorieId}`);
-
-export const getCategorieProduits = (categorieId: number) =>
-  fetchAPI<Produit[]>(`/api/v1/categories/${categorieId}/produits`);
-
-// ========== PRODUITS ==========
-export const getProduits = (
-  skip: number = 0,
-  limit: number = 100,
-  categorieId?: number,
-  filiereId?: number
-) => {
-  let url = `/api/v1/produits/?skip=${skip}&limit=${limit}`;
-  if (categorieId) url += `&categorie_id=${categorieId}`;
-  if (filiereId) url += `&filiere_id=${filiereId}`;
-  return fetchAPI<ApiResponse<Produit>>(url);
-};
-
-export const searchProduits = (
-  query: string,
-  limit: number = 10,
-  categorieId?: number,
-  filiereId?: number
-) => {
-  let url = `/api/v1/produits/search?q=${encodeURIComponent(query)}&limit=${limit}`;
-  if (categorieId) url += `&categorie_id=${categorieId}`;
-  if (filiereId) url += `&filiere_id=${filiereId}`;
-  return fetchAPI<Produit[]>(url);
-};
-
-export const getProduit = (produitId: number) =>
-  fetchAPI<Produit>(`/api/v1/produits/${produitId}`);
-
-export const getProduitResume = (produitId: number, annee?: number) => {
-  let url = `/api/v1/produits/${produitId}/resume`;
-  if (annee) url += `?annee=${annee}`;
-  return fetchAPI<any>(url);
-};
-
-// ========== PRODUCTIONS ==========
-export const getProductions = (params: {
-  skip?: number;
-  limit?: number;
-  annee?: number;
-  annee_debut?: number;
-  annee_fin?: number;
-  produit_id?: number;
-  categorie_id?: number;
-  filiere_id?: number;
-  region_id?: number;
-  departement_id?: number;
-  commune_id?: number;
-  saison?: string;
-}) => {
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      searchParams.append(key, String(value));
-    }
-  });
-  return fetchAPI<ApiResponse<Production>>(`/api/v1/productions/?${searchParams.toString()}`);
-};
-
-export const getAnneesDisponibles = () =>
-  fetchAPI<number[]>(`/api/v1/productions/annees`);
-
-export const getSaisonsDisponibles = () =>
-  fetchAPI<string[]>(`/api/v1/productions/saisons`);
-
-export const getProductionsParAnnee = (
-  produitId?: number,
-  regionId?: number,
-  anneeDebut?: number,
-  anneeFin?: number
-) => {
-  let url = `/api/v1/productions/par-annee`;
-  const params = new URLSearchParams();
-  if (produitId) params.append('produit_id', String(produitId));
-  if (regionId) params.append('region_id', String(regionId));
-  if (anneeDebut) params.append('annee_debut', String(anneeDebut));
-  if (anneeFin) params.append('annee_fin', String(anneeFin));
-  if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<any>(url);
-};
-
-export const getProductionsParRegion = (annee?: number, produitId?: number) => {
-  let url = `/api/v1/productions/par-region`;
-  const params = new URLSearchParams();
-  if (annee) params.append('annee', String(annee));
-  if (produitId) params.append('produit_id', String(produitId));
-  if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<any>(url);
-};
-
-export const getProductionsParProduit = (annee?: number, regionId?: number) => {
-  let url = `/api/v1/productions/par-produit`;
-  const params = new URLSearchParams();
-  if (annee) params.append('annee', String(annee));
-  if (regionId) params.append('region_id', String(regionId));
-  if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<any>(url);
-};
-
-// ========== STATISTIQUES ==========
-export const getStatistiquesGlobales = () =>
-  fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`);
-
-export const getStatistiquesProduction = (annee?: number) => {
-  let url = `/api/v1/statistiques/production`;
-  if (annee) url += `?annee=${annee}`;
-  return fetchAPI<any>(url);
-};
-
-export const getEvolutionProduction = (
-  produitId?: number,
-  regionId?: number,
-  anneeDebut?: number,
-  anneeFin?: number
-) => {
-  let url = `/api/v1/statistiques/evolution`;
-  const params = new URLSearchParams();
-  if (produitId) params.append('produit_id', String(produitId));
-  if (regionId) params.append('region_id', String(regionId));
-  if (anneeDebut) params.append('annee_debut', String(anneeDebut));
-  if (anneeFin) params.append('annee_fin', String(anneeFin));
-  if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<any>(url);
-};
-
-export const getTopRegions = (annee?: number, produitId?: number, limit: number = 10) => {
-  let url = `/api/v1/statistiques/top-regions?limit=${limit}`;
-  if (annee) url += `&annee=${annee}`;
-  if (produitId) url += `&produit_id=${produitId}`;
-  return fetchAPI<any>(url);
-};
-
-export const getTopProduits = (annee?: number, regionId?: number, limit: number = 10) => {
-  let url = `/api/v1/statistiques/top-produits?limit=${limit}`;
-  if (annee) url += `&annee=${annee}`;
-  if (regionId) url += `&region_id=${regionId}`;
-  return fetchAPI<any>(url);
-};
-
-// ========== GEOJSON ==========
-export const getRegionsGeoJSON = () =>
-  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`);
-
-export const getDepartementsGeoJSON = (regionId?: number) => {
-  let url = `/api/v1/geojson/departements`;
-  if (regionId) url += `?region_id=${regionId}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
-};
-
-export const getCommunesGeoJSON = (departementId?: number) => {
-  let url = `/api/v1/geojson/communes`;
-  if (departementId) url += `?departement_id=${departementId}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
-};
-
-export const getInfrastructuresGeoJSON = (typeInfrastructure?: string, communeId?: number) => {
-  let url = `/api/v1/geojson/infrastructures`;
-  const params = new URLSearchParams();
-  if (typeInfrastructure) params.append('type_infrastructure', typeInfrastructure);
-  if (communeId) params.append('commune_id', String(communeId));
-  if (params.toString()) url += `?${params.toString()}`;
-  return fetchAPI<GeoJSONFeatureCollection>(url);
+// ─── GEOJSON ─────────────────────────────────────────────────────────────────
+export const getRegionsGeoJSON         = () => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`,{useCache:true});
+export const getDepartementsGeoJSON    = (regionId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/departements${regionId?'?region_id='+regionId:''}`,{useCache:true});
+export const getCommunesGeoJSON        = (deptId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/communes${deptId?'?departement_id='+deptId:''}`,{useCache:true});
+export const getZonesHalieutiquesGeoJSON=(type?:string) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/zones-halieutiques${type?'?type_zone='+type:''}`,{useCache:true});
+export const getBassinsGeoJSON         = (filId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/bassins${filId?'?filiere_id='+filId:''}`,{useCache:true});
+export const getInfrastructuresGeoJSON = (type?:string,communeId?:number) => {
+  const p=new URLSearchParams(); if(type) p.append('type_infrastructure',type); if(communeId) p.append('commune_id',String(communeId));
+  return fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/infrastructures${p.toString()?'?'+p:''}`,{useCache:true});
 };
 
 
@@ -1934,7 +2157,7 @@ export const getInfrastructuresGeoJSON = (typeInfrastructure?: string, communeId
 FICHIER: D:\5GI\Projet-TI\webmap\types\api.ts
 ================================================================================
 
-// Types pour l'API Cameroun WebMapping
+// ─── Types pour l'API Cameroun WebMapping ───────────────────────────────────
 
 export interface Region {
   id: number;
@@ -2056,12 +2279,21 @@ export interface BassinProduction {
   created_at: string | null;
 }
 
+export interface SourceDonnees {
+  id: number;
+  nom: string;
+  code: string;
+  description: string | null;
+  url: string | null;
+  contact: string | null;
+  fiabilite: string | null;
+  created_at: string | null;
+}
+
+// ─── GeoJSON ─────────────────────────────────────────────────────────────────
 export interface GeoJSONFeature {
   type: 'Feature';
-  geometry: {
-    type: string;
-    coordinates: any;
-  };
+  geometry: { type: string; coordinates: any };
   properties: Record<string, any>;
 }
 
@@ -2070,6 +2302,7 @@ export interface GeoJSONFeatureCollection {
   features: GeoJSONFeature[];
 }
 
+// ─── API wrappers ────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   total: number;
   items: T[];
@@ -2084,6 +2317,40 @@ export interface StatistiquesGlobales {
   total_productions: number;
 }
 
+// ─── Stats types (loose – backend returns dynamic shapes) ───────────────────
+export interface ProductionParAnnee {
+  annee: number;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface TopRegionItem {
+  region_id?: number;
+  nom?: string;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface TopProduitItem {
+  produit_id?: number;
+  nom?: string;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface ComparaisonAnnees {
+  annee_reference: number;
+  annee_comparaison: number;
+  [key: string]: any;
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
 export type MapLevel = 'regions' | 'departements' | 'communes';
 
 export interface FilterState {
@@ -2091,10 +2358,6 @@ export interface FilterState {
   categorie_id: number | null;
   produit_id: number | null;
   annee: number | null;
-  region_id: number | null;
-  departement_id: number | null;
-  commune_id: number | null;
-  mapLevel: MapLevel;
 }
 
 

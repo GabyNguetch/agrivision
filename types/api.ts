@@ -1,4 +1,4 @@
-// Types pour l'API Cameroun WebMapping
+// ─── Types pour l'API Cameroun WebMapping ───────────────────────────────────
 
 export interface Region {
   id: number;
@@ -120,12 +120,21 @@ export interface BassinProduction {
   created_at: string | null;
 }
 
+export interface SourceDonnees {
+  id: number;
+  nom: string;
+  code: string;
+  description: string | null;
+  url: string | null;
+  contact: string | null;
+  fiabilite: string | null;
+  created_at: string | null;
+}
+
+// ─── GeoJSON ─────────────────────────────────────────────────────────────────
 export interface GeoJSONFeature {
   type: 'Feature';
-  geometry: {
-    type: string;
-    coordinates: any;
-  };
+  geometry: { type: string; coordinates: any };
   properties: Record<string, any>;
 }
 
@@ -134,6 +143,7 @@ export interface GeoJSONFeatureCollection {
   features: GeoJSONFeature[];
 }
 
+// ─── API wrappers ────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   total: number;
   items: T[];
@@ -148,6 +158,40 @@ export interface StatistiquesGlobales {
   total_productions: number;
 }
 
+// ─── Stats types (loose – backend returns dynamic shapes) ───────────────────
+export interface ProductionParAnnee {
+  annee: number;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface TopRegionItem {
+  region_id?: number;
+  nom?: string;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface TopProduitItem {
+  produit_id?: number;
+  nom?: string;
+  total_quantite?: number;
+  total_valeur_fcfa?: number;
+  nombre_productions?: number;
+  [key: string]: any;
+}
+
+export interface ComparaisonAnnees {
+  annee_reference: number;
+  annee_comparaison: number;
+  [key: string]: any;
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
 export type MapLevel = 'regions' | 'departements' | 'communes';
 
 export interface FilterState {
@@ -155,8 +199,4 @@ export interface FilterState {
   categorie_id: number | null;
   produit_id: number | null;
   annee: number | null;
-  region_id: number | null;
-  departement_id: number | null;
-  commune_id: number | null;
-  mapLevel: MapLevel;
 }

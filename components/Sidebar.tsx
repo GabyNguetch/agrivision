@@ -1,39 +1,24 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import {
-  Search,
-  Filter,
-  MapPin,
-  Layers,
-  TrendingUp,
-  X,
-  ChevronDown,
-  ChevronRight,
-  Wheat,
-  Package,
-  Calendar,
+  Search, Filter, MapPin, Layers, TrendingUp, X,
+  ChevronDown, ChevronRight, Wheat, Package, Calendar,
+  ExternalLink, Info,
 } from 'lucide-react';
-import type {
-  Filiere,
-  CategorieProduit,
-  Produit,
-  MapLevel,
-} from '@/types/api';
+import type { Filiere, CategorieProduit, Produit, MapLevel } from '@/types/api';
 import {
-  getFilieres,
-  getCategories,
-  getProduits,
-  searchFilieres,
-  getAnneesDisponibles,
+  getFilieres, getCategories, getProduits,
+  searchFilieres, getAnneesDisponibles,
 } from '@/lib/api';
 import { SkeletonList } from './Skeleton';
 
 interface SidebarProps {
-  onFilterChange: (filters: any) => void;
-  onMapLevelChange: (level: MapLevel) => void;
-  selectedEntity: any;
-  currentMapLevel: MapLevel;
+  onFilterChange   : (filters: any) => void;
+  onMapLevelChange : (level: MapLevel) => void;
+  selectedEntity   : any;
+  currentMapLevel  : MapLevel;
 }
 
 export default function Sidebar({
@@ -43,67 +28,48 @@ export default function Sidebar({
   currentMapLevel,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'filters' | 'info'>('filters');
+  const [activeTab, setActiveTab]     = useState<'filters' | 'info'>('filters');
 
-  // États pour les filtres
-  const [filieres, setFilieres] = useState<Filiere[]>([]);
+  const [filieres,   setFilieres]   = useState<Filiere[]>([]);
   const [categories, setCategories] = useState<CategorieProduit[]>([]);
-  const [produits, setProduits] = useState<Produit[]>([]);
-  const [annees, setAnnees] = useState<number[]>([]);
+  const [produits,   setProduits]   = useState<Produit[]>([]);
+  const [annees,     setAnnees]     = useState<number[]>([]);
 
-  // Sélections
-  const [selectedFiliere, setSelectedFiliere] = useState<number | null>(null);
+  const [selectedFiliere,   setSelectedFiliere]   = useState<number | null>(null);
   const [selectedCategorie, setSelectedCategorie] = useState<number | null>(null);
-  const [selectedProduit, setSelectedProduit] = useState<number | null>(null);
-  const [selectedAnnee, setSelectedAnnee] = useState<number | null>(null);
+  const [selectedProduit,   setSelectedProduit]   = useState<number | null>(null);
+  const [selectedAnnee,     setSelectedAnnee]     = useState<number | null>(null);
 
-  // Sections ouvertes/fermées
   const [openSections, setOpenSections] = useState({
-    filieres: true,
-    categories: false,
-    produits: false,
-    mapLevel: false,
-    annee: false,
+    filieres: true, categories: false, produits: false,
+    mapLevel: true, annee: false,
   });
 
   const [loading, setLoading] = useState(false);
 
-  // ✅ Ref pour stocker les filtres précédents et éviter les appels en boucle
-  const prevFiltersRef = useRef({
-    filiere_id: null as number | null,
-    categorie_id: null as number | null,
-    produit_id: null as number | null,
-    annee: null as number | null,
-  });
+  const prevFiltersRef     = useRef({ filiere_id: null as number|null, categorie_id: null as number|null, produit_id: null as number|null, annee: null as number|null });
+  const onFilterChangeRef  = useRef(onFilterChange);
+  useEffect(() => { onFilterChangeRef.current = onFilterChange; }, [onFilterChange]);
 
-  // ✅ Ref pour stocker onFilterChange — évite de le mettre dans les dépendances
-  const onFilterChangeRef = useRef(onFilterChange);
-  useEffect(() => {
-    onFilterChangeRef.current = onFilterChange;
-  }, [onFilterChange]);
+  // ── Initial load ─────────────────────────────────────────────────────────
+  useEffect(() => { loadFilieres(); loadAnnees(); }, []);
 
-  // ─── Chargement initial ───────────────────────────────────────────────────
-  useEffect(() => {
-    loadFilieres();
-    loadAnnees();
-  }, []); // ✅ Une seule fois au montage
-
-  // ─── Charger catégories quand filière change ─────────────────────────────
+  // ── Cascade: filière → catégories ────────────────────────────────────────
   useEffect(() => {
     if (selectedFiliere) {
       loadCategories(selectedFiliere);
-      setOpenSections((prev) => ({ ...prev, categories: true }));
+      setOpenSections(p => ({ ...p, categories: true }));
     } else {
       setCategories([]);
       setSelectedCategorie(null);
     }
   }, [selectedFiliere]);
 
-  // ─── Charger produits quand catégorie ou filière change ──────────────────
+  // ── Cascade: catégorie / filière → produits ──────────────────────────────
   useEffect(() => {
     if (selectedCategorie) {
       loadProduits(selectedCategorie, selectedFiliere);
-      setOpenSections((prev) => ({ ...prev, produits: true }));
+      setOpenSections(p => ({ ...p, produits: true }));
     } else if (selectedFiliere) {
       loadProduits(undefined, selectedFiliere);
     } else {
@@ -112,201 +78,146 @@ export default function Sidebar({
     }
   }, [selectedCategorie, selectedFiliere]);
 
-  // ─── Notifier le parent UNIQUEMENT si les filtres ont vraiment changé ─────
+  // ── Notify parent only on real change ────────────────────────────────────
   useEffect(() => {
-    const newFilters = {
-      filiere_id: selectedFiliere,
-      categorie_id: selectedCategorie,
-      produit_id: selectedProduit,
-      annee: selectedAnnee,
-    };
-
-    const prev = prevFiltersRef.current;
-
-    // Comparaison simple — on n'appelle onFilterChange que si quelque chose a changé
-    if (
-      prev.filiere_id !== newFilters.filiere_id ||
-      prev.categorie_id !== newFilters.categorie_id ||
-      prev.produit_id !== newFilters.produit_id ||
-      prev.annee !== newFilters.annee
-    ) {
-      prevFiltersRef.current = newFilters;
-      onFilterChangeRef.current(newFilters);
+    const nf = { filiere_id: selectedFiliere, categorie_id: selectedCategorie, produit_id: selectedProduit, annee: selectedAnnee };
+    const pv = prevFiltersRef.current;
+    if (pv.filiere_id !== nf.filiere_id || pv.categorie_id !== nf.categorie_id || pv.produit_id !== nf.produit_id || pv.annee !== nf.annee) {
+      prevFiltersRef.current = nf;
+      onFilterChangeRef.current(nf);
     }
   }, [selectedFiliere, selectedCategorie, selectedProduit, selectedAnnee]);
-  // ✅ onFilterChange n'est plus dans les dépendances
 
-  // ─── Fonctions de chargement ──────────────────────────────────────────────
+  // ── When entity selected → auto-switch to info tab ───────────────────────
+  useEffect(() => {
+    if (selectedEntity) setActiveTab('info');
+  }, [selectedEntity]);
+
+  // ── Loaders ──────────────────────────────────────────────────────────────
   const loadFilieres = async () => {
-    try {
-      setLoading(true);
-      const response = await getFilieres(0, 100);
-      setFilieres(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des filières:', error);
-    } finally {
-      setLoading(false);
-    }
+    try { setLoading(true); const r = await getFilieres(0, 100); setFilieres(r.items); }
+    catch (e) { console.error('loadFilieres', e); }
+    finally { setLoading(false); }
   };
-
-  const loadCategories = async (filiereId: number) => {
-    try {
-      const response = await getCategories(0, 100, filiereId);
-      setCategories(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des catégories:', error);
-    }
+  const loadCategories = async (fId: number) => {
+    try { const r = await getCategories(0, 100, fId); setCategories(r.items); }
+    catch (e) { console.error('loadCategories', e); }
   };
-
-  const loadProduits = async (categorieId?: number, filiereId?: number) => {
-    try {
-      const response = await getProduits(0, 100, categorieId, filiereId);
-      setProduits(response.items);
-    } catch (error) {
-      console.error('Erreur lors du chargement des produits:', error);
-    }
+  const loadProduits = async (cId?: number, fId?: number) => {
+    try { const r = await getProduits(0, 100, cId, fId); setProduits(r.items); }
+    catch (e) { console.error('loadProduits', e); }
   };
-
   const loadAnnees = async () => {
-    try {
-      const data = await getAnneesDisponibles();
-      setAnnees(data);
-    } catch (error) {
-      console.error('Erreur lors du chargement des années:', error);
-    }
+    try { const d = await getAnneesDisponibles(); setAnnees(d); }
+    catch (e) { console.error('loadAnnees', e); }
   };
 
   const handleSearch = async () => {
     if (searchQuery.trim().length < 2) return;
-
-    try {
-      setLoading(true);
-      const results = await searchFilieres(searchQuery, 10);
-      setFilieres(results);
-    } catch (error) {
-      console.error('Erreur lors de la recherche:', error);
-    } finally {
-      setLoading(false);
-    }
+    try { setLoading(true); setFilieres(await searchFilieres(searchQuery, 10)); }
+    catch (e) { console.error('handleSearch', e); }
+    finally { setLoading(false); }
   };
 
-  const toggleSection = (section: keyof typeof openSections) => {
-    setOpenSections((prev) => ({ ...prev, [section]: !prev[section] }));
-  };
+  const toggleSection = (s: keyof typeof openSections) =>
+    setOpenSections(p => ({ ...p, [s]: !p[s] }));
 
   const resetFilters = () => {
-    setSelectedFiliere(null);
-    setSelectedCategorie(null);
-    setSelectedProduit(null);
-    setSelectedAnnee(null);
+    setSelectedFiliere(null); setSelectedCategorie(null);
+    setSelectedProduit(null); setSelectedAnnee(null);
     setSearchQuery('');
     loadFilieres();
   };
 
-  const mapLevelOptions = [
-    { value: 'regions' as MapLevel, label: 'Régions', icon: MapPin },
-    { value: 'departements' as MapLevel, label: 'Départements', icon: Layers },
-    { value: 'communes' as MapLevel, label: 'Communes', icon: TrendingUp },
+  const mapLevelOptions: { value: MapLevel; label: string; icon: typeof MapPin }[] = [
+    { value: 'regions',      label: 'Régions',      icon: MapPin },
+    { value: 'departements', label: 'Départements', icon: Layers },
+    { value: 'communes',     label: 'Communes',     icon: TrendingUp },
   ];
+
+  // ── Detail URL helper ────────────────────────────────────────────────────
+  const detailUrl = selectedEntity
+    ? `/map/${selectedEntity.id}?level=${currentMapLevel}`
+    : '#';
+
+  // ── Shared button style ──────────────────────────────────────────────────
+  const btnBase = (active: boolean) =>
+    `w-full px-4 py-2.5 rounded-lg text-left transition-all duration-200 border-2 ${
+      active
+        ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-500 font-semibold'
+        : 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-transparent hover:border-green-300 dark:hover:border-green-700 hover:bg-green-50/50 dark:hover:bg-green-900/20'
+    }`;
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800">
       {/* Header */}
-      <div className="p-6 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-primary-50 to-white dark:from-gray-900 dark:to-gray-950">
-        <h2 className="text-2xl font-display font-bold text-gray-900 dark:text-white mb-2">
-          Filtres & Recherche
-        </h2>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Explorez les données agricoles du Cameroun
-        </p>
+      <div className="p-5 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-green-50 to-white dark:from-gray-900 dark:to-gray-950">
+        <h2 className="text-lg font-display font-bold text-gray-900 dark:text-white">Filtres &amp; Recherche</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Données agricoles du Cameroun</p>
       </div>
 
       {/* Tabs */}
       <div className="flex border-b border-gray-200 dark:border-gray-800">
-        <button
-          onClick={() => setActiveTab('filters')}
-          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
-            activeTab === 'filters'
-              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-        >
-          <Filter className="w-4 h-4" />
-          Filtres
-        </button>
-        <button
-          onClick={() => setActiveTab('info')}
-          className={`flex-1 px-4 py-3 text-sm font-medium transition-all ${
-            activeTab === 'info'
-              ? 'border-b-2 border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-gray-900'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-        >
-          <MapPin className="w-4 h-4" />
-          Informations
-        </button>
+        {(['filters', 'info'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-1.5 ${
+              activeTab === tab
+                ? 'border-b-2 border-green-500 text-green-600 dark:text-green-400 bg-green-50/60 dark:bg-green-900/20'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'
+            }`}
+          >
+            {tab === 'filters' ? <Filter className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+            {tab === 'filters' ? 'Filtres' : 'Informations'}
+          </button>
+        ))}
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-4">
         {activeTab === 'filters' ? (
           <>
-            {/* Barre de recherche */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Search className="w-4 h-4" />
-                Recherche rapide
+            {/* Search */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                <Search className="w-3.5 h-3.5" /> Recherche rapide
               </label>
               <div className="relative">
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  placeholder="Rechercher une filière..."
-                  className="w-full px-4 py-3 pr-10 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-500 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                  placeholder="Filière, produit…"
+                  className="w-full px-3 py-2 pr-9 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition-all"
                 />
-                <button
-                  onClick={handleSearch}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-gray-800 rounded-lg transition-all"
-                >
-                  <Search className="w-5 h-5" />
+                <button onClick={handleSearch} className="absolute right-2 top-1/2 -translate-y-1/2 text-green-600 dark:text-green-400 hover:opacity-70 transition-opacity">
+                  <Search className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Niveau de carte */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('mapLevel')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Layers className="w-4 h-4" />
-                  Niveau de visualisation
-                </span>
-                {openSections.mapLevel ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            {/* Niveau de visualisation */}
+            <div>
+              <button onClick={() => toggleSection('mapLevel')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Layers className="w-3.5 h-3.5" /> Niveau</span>
+                {openSections.mapLevel ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-
               {openSections.mapLevel && (
-                <div className="space-y-2 pl-6">
-                  {mapLevelOptions.map((option) => {
-                    const Icon = option.icon;
+                <div className="flex gap-2">
+                  {mapLevelOptions.map(opt => {
+                    const Icon = opt.icon;
+                    const active = currentMapLevel === opt.value;
                     return (
-                      <button
-                        key={option.value}
-                        onClick={() => onMapLevelChange(option.value)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          currentMapLevel === option.value
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', width: '100%' }}
-                      >
-                        <Icon className="w-5 h-5" />
-                        {option.label}
+                      <button key={opt.value} onClick={() => onMapLevelChange(opt.value)}
+                        className={`flex-1 py-2 rounded-lg text-center text-xs font-semibold transition-all border-2 flex flex-col items-center gap-0.5 ${
+                          active
+                            ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-500'
+                            : 'bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-transparent hover:border-green-300'
+                        }`}>
+                        <Icon className="w-4 h-4" />
+                        {opt.label}
                       </button>
                     );
                   })}
@@ -315,81 +226,40 @@ export default function Sidebar({
             </div>
 
             {/* Filières */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('filieres')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Wheat className="w-4 h-4" />
-                  Filières ({filieres.length})
-                </span>
-                {openSections.filieres ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            <div>
+              <button onClick={() => toggleSection('filieres')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Wheat className="w-3.5 h-3.5" /> Filières <span className="text-green-600 dark:text-green-400">({filieres.length})</span></span>
+                {openSections.filieres ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-
               {openSections.filieres && (
-                <div className="space-y-2">
-                  {loading ? (
-                    <SkeletonList count={3} />
-                  ) : (
-                    filieres.map((filiere) => (
-                      <button
-                        key={filiere.id}
-                        onClick={() => setSelectedFiliere(filiere.id === selectedFiliere ? null : filiere.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedFiliere === filiere.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                          <div
-                            className="w-3 h-3 rounded-full"
-                            style={{ backgroundColor: filiere.couleur || '#22c55e', flexShrink: 0 }}
-                          />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="font-medium truncate">{filiere.nom}</div>
-                            {filiere.description && (
-                              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {filiere.description}
-                              </div>
-                            )}
-                          </div>
+                <div className="space-y-1.5">
+                  {loading ? <SkeletonList count={3} /> : filieres.map(f => (
+                    <button key={f.id} onClick={() => setSelectedFiliere(f.id === selectedFiliere ? null : f.id)} className={btnBase(selectedFiliere === f.id)}>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: f.couleur || '#22c55e' }} />
+                        <div className="min-w-0">
+                          <div className="font-medium truncate text-sm">{f.nom}</div>
+                          {f.description && <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{f.description}</div>}
                         </div>
-                      </button>
-                    ))
-                  )}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
 
             {/* Catégories */}
             {selectedFiliere && categories.length > 0 && (
-              <div className="space-y-3">
-                <button
-                  onClick={() => toggleSection('categories')}
-                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Package className="w-4 h-4" />
-                    Catégories ({categories.length})
-                  </span>
-                  {openSections.categories ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              <div>
+                <button onClick={() => toggleSection('categories')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                  <span className="flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Catégories <span className="text-green-600 dark:text-green-400">({categories.length})</span></span>
+                  {openSections.categories ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </button>
-
                 {openSections.categories && (
-                  <div className="space-y-2 pl-6">
-                    {categories.map((categorie) => (
-                      <button
-                        key={categorie.id}
-                        onClick={() => setSelectedCategorie(categorie.id === selectedCategorie ? null : categorie.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedCategorie === categorie.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        {categorie.nom}
+                  <div className="space-y-1.5 pl-4 border-l-2 border-green-200 dark:border-green-800 ml-1.5">
+                    {categories.map(c => (
+                      <button key={c.id} onClick={() => setSelectedCategorie(c.id === selectedCategorie ? null : c.id)} className={btnBase(selectedCategorie === c.id)}>
+                        <span className="text-sm">{c.nom}</span>
                       </button>
                     ))}
                   </div>
@@ -399,36 +269,17 @@ export default function Sidebar({
 
             {/* Produits */}
             {produits.length > 0 && (
-              <div className="space-y-3">
-                <button
-                  onClick={() => toggleSection('produits')}
-                  className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Package className="w-4 h-4" />
-                    Produits ({produits.length})
-                  </span>
-                  {openSections.produits ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              <div>
+                <button onClick={() => toggleSection('produits')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                  <span className="flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Produits <span className="text-green-600 dark:text-green-400">({produits.length})</span></span>
+                  {openSections.produits ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </button>
-
                 {openSections.produits && (
-                  <div className="space-y-2 pl-6">
-                    {produits.slice(0, 10).map((produit) => (
-                      <button
-                        key={produit.id}
-                        onClick={() => setSelectedProduit(produit.id === selectedProduit ? null : produit.id)}
-                        className={`w-full px-4 py-3 rounded-lg text-left transition-all transform hover:scale-105 ${
-                          selectedProduit === produit.id
-                            ? 'bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-300 font-medium border-2 border-primary-500'
-                            : 'bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-2 border-transparent'
-                        }`}
-                      >
-                        <div className="font-medium">{produit.nom}</div>
-                        {produit.unite_mesure && (
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
-                            Unité: {produit.unite_mesure}
-                          </div>
-                        )}
+                  <div className="space-y-1.5 pl-4 border-l-2 border-green-100 dark:border-green-900 ml-1.5">
+                    {produits.slice(0, 12).map(p => (
+                      <button key={p.id} onClick={() => setSelectedProduit(p.id === selectedProduit ? null : p.id)} className={btnBase(selectedProduit === p.id)}>
+                        <div className="text-sm font-medium">{p.nom}</div>
+                        {p.unite_mesure && <div className="text-xs text-gray-400 dark:text-gray-500">Unité : {p.unite_mesure}</div>}
                       </button>
                     ))}
                   </div>
@@ -437,75 +288,72 @@ export default function Sidebar({
             )}
 
             {/* Année */}
-            <div className="space-y-3">
-              <button
-                onClick={() => toggleSection('annee')}
-                className="w-full flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Calendar className="w-4 h-4" />
-                  Année
-                </span>
-                {openSections.annee ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+            <div>
+              <button onClick={() => toggleSection('annee')} className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">
+                <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Année</span>
+                {openSections.annee ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-
               {openSections.annee && annees.length > 0 && (
-                <div className="pl-6">
-                  <select
-                    value={selectedAnnee || ''}
-                    onChange={(e) => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
-                    className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
-                  >
-                    <option value="">Toutes les années</option>
-                    {annees.map((annee) => (
-                      <option key={annee} value={annee}>
-                        {annee}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <select value={selectedAnnee || ''} onChange={e => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none">
+                  <option value="">Toutes les années</option>
+                  {annees.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
               )}
             </div>
 
-            {/* Reset Button */}
-            <button
-              onClick={resetFilters}
-              className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-900 hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg font-medium transition-all transform hover:scale-105"
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-            >
-              <X className="w-5 h-5" />
-              Réinitialiser les filtres
+            {/* Reset */}
+            <button onClick={resetFilters} className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-1.5">
+              <X className="w-4 h-4" /> Réinitialiser
             </button>
           </>
         ) : (
-          <div className="space-y-4">
+          /* ── Info tab ─────────────────────────────────────────────────────── */
+          <div className="space-y-3">
             {selectedEntity ? (
-              <div className="bg-gradient-to-br from-primary-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-6 border-2 border-primary-200 dark:border-primary-800">
-                <h3 className="text-xl font-display font-bold text-gray-900 dark:text-white mb-4">
-                  {selectedEntity.nom || 'Information'}
-                </h3>
+              <>
+                {/* Entity card */}
+                <div className="anim-slideUp bg-gradient-to-br from-green-50 to-white dark:from-gray-900 dark:to-gray-950 rounded-xl p-5 border-2 border-green-200 dark:border-green-800">
+                  <div className="flex items-start justify-between mb-3">
+                    <h3 className="text-base font-display font-bold text-gray-900 dark:text-white">
+                      {selectedEntity.nom || 'Information'}
+                    </h3>
+                    <span className="text-xs bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-2 py-0.5 rounded-full font-semibold capitalize">
+                      {currentMapLevel.slice(0, -1)}
+                    </span>
+                  </div>
 
-                <div className="space-y-3">
-                  {Object.entries(selectedEntity).map(([key, value]) => {
-                    if (key === 'id' || key === 'created_at' || key === 'updated_at' || !value) return null;
-
-                    return (
-                      <div key={key} className="border-b border-gray-200 dark:border-gray-800 pb-2">
-                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">
-                          {key.replace(/_/g, ' ')}
+                  <div className="space-y-2">
+                    {Object.entries(selectedEntity).map(([key, value]) => {
+                      if (['id','created_at','updated_at'].includes(key) || !value) return null;
+                      if (key === 'nom') return null; // already shown as title
+                      return (
+                        <div key={key} className="flex items-baseline justify-between border-b border-gray-100 dark:border-gray-800 pb-1.5">
+                          <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">{key.replace(/_/g, ' ')}</span>
+                          <span className="text-sm text-gray-800 dark:text-gray-200 font-medium text-right max-w-[55%] truncate">
+                            {Array.isArray(value) ? value.join(', ') : String(value)}
+                          </span>
                         </div>
-                        <div className="text-sm text-gray-900 dark:text-white">
-                          {Array.isArray(value) ? value.join(', ') : String(value)}
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+
+                {/* Voir Plus button */}
+                <Link
+                  href={detailUrl}
+                  className="anim-slideUp delay-100 flex items-center justify-center gap-2.5 w-full px-5 py-3 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-[1.02]"
+                >
+                  <ExternalLink className="w-5 h-5" />
+                  Voir plus — Page détail
+                </Link>
+              </>
             ) : (
-              <div className="text-center py-12">
-                <MapPin className="w-16 h-16 mx-auto text-gray-300 dark:text-gray-700 mb-4" />
-                <p className="text-gray-600 dark:text-gray-400">
+              <div className="text-center py-16 anim-fadeIn">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                  <MapPin className="w-8 h-8 text-gray-300 dark:text-gray-600" />
+                </div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
                   Cliquez sur une zone de la carte pour voir ses informations
                 </p>
               </div>
