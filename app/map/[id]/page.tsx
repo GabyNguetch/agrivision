@@ -44,6 +44,7 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
   const [geoData, setGeoData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [partialError, setPartialError] = useState<string | null>(null);
 
   // FIX: Résoudre la Promise params
   useEffect(() => {
@@ -61,6 +62,7 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
       console.log(`📄 [DetailPage] Loading detail for id=${id} level=${level}`);
       setLoading(true);
       setError(null);
+      setPartialError(null);
 
       try {
         let ent: any, prods: any, kids: any, infras: any, geo: any;
@@ -68,9 +70,9 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
 
         // Charger les données de base
         const [filieresData, categoriesData, produitsData] = await Promise.all([
-          getFilieres(0, 100),
-          getCategories(0, 100),
-          getProduits(0, 100),
+          getFilieres(0, 100).catch(e => { console.warn('Filieres load failed:', e); return { items: [] }; }),
+          getCategories(0, 100).catch(e => { console.warn('Categories load failed:', e); return { items: [] }; }),
+          getProduits(0, 100).catch(e => { console.warn('Produits load failed:', e); return { items: [] }; }),
         ]);
 
         fils = filieresData.items;
@@ -79,33 +81,76 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
 
         switch (level) {
           case 'regions': {
-            [ent, prods, kids, geo] = await Promise.all([
+            const results = await Promise.allSettled([
               getRegion(id),
               getRegionProductions(id),
               getRegionDepartements(id),
               getRegionsGeoJSON(),
             ]);
+
+            ent = results[0].status === 'fulfilled' ? results[0].value : null;
+            prods = results[1].status === 'fulfilled' ? results[1].value : [];
+            kids = results[2].status === 'fulfilled' ? results[2].value : [];
+            geo = results[3].status === 'fulfilled' ? results[3].value : null;
             infras = [];
+
+            // Vérifier les erreurs
+            const failedResults = results.filter(r => r.status === 'rejected');
+            if (failedResults.length > 0 && !ent) {
+              throw new Error('Impossible de charger les données de la région');
+            }
+            if (failedResults.length > 0) {
+              setPartialError('Certaines données n\'ont pas pu être chargées');
+            }
             break;
           }
           case 'departements': {
-            [ent, prods, kids, geo] = await Promise.all([
+            const results = await Promise.allSettled([
               getDepartement(id),
               getDepartementProductions(id),
               getDepartementCommunes(id),
               getDepartementsGeoJSON(),
             ]);
+
+            ent = results[0].status === 'fulfilled' ? results[0].value : null;
+            prods = results[1].status === 'fulfilled' ? results[1].value : [];
+            kids = results[2].status === 'fulfilled' ? results[2].value : [];
+            geo = results[3].status === 'fulfilled' ? results[3].value : null;
             infras = [];
+
+            // Vérifier les erreurs
+            const failedResults = results.filter(r => r.status === 'rejected');
+            if (failedResults.length > 0 && !ent) {
+              throw new Error('Impossible de charger les données du département');
+            }
+            if (failedResults.length > 0) {
+              setPartialError('Certaines données n\'ont pas pu être chargées (notamment les communes)');
+              console.warn('Failed to load some data:', failedResults);
+            }
             break;
           }
           case 'communes': {
-            [ent, prods, infras, geo] = await Promise.all([
+            const results = await Promise.allSettled([
               getCommune(id),
               getCommuneProductions(id),
               getCommuneInfrastructures(id),
               getCommunesGeoJSON(),
             ]);
+
+            ent = results[0].status === 'fulfilled' ? results[0].value : null;
+            prods = results[1].status === 'fulfilled' ? results[1].value : [];
+            infras = results[2].status === 'fulfilled' ? results[2].value : [];
+            geo = results[3].status === 'fulfilled' ? results[3].value : null;
             kids = [];
+
+            // Vérifier les erreurs
+            const failedResults = results.filter(r => r.status === 'rejected');
+            if (failedResults.length > 0 && !ent) {
+              throw new Error('Impossible de charger les données de la commune');
+            }
+            if (failedResults.length > 0) {
+              setPartialError('Certaines données n\'ont pas pu être chargées');
+            }
             break;
           }
           default:
@@ -220,6 +265,19 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
         </div>
       </header>
 
+      {/* Avertissement d'erreur partielle */}
+      {partialError && !loading && (
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4">
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-semibold text-yellow-800 dark:text-yellow-200 text-sm">Chargement partiel</h4>
+              <p className="text-yellow-700 dark:text-yellow-300 text-sm mt-1">{partialError}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         /* Skeleton */
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-6">
@@ -233,9 +291,11 @@ export default function DetailPage({ params }: { params: Promise<{ id: string }>
       ) : (
         <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
           {/* Carte hero */}
-          <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '400px' }}>
-            <DetailMap geoData={geoData} targetId={id!} />
-          </div>
+          {geoData && (
+            <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '400px' }}>
+              <DetailMap geoData={geoData} targetId={id!} />
+            </div>
+          )}
 
           {/* KPI Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
