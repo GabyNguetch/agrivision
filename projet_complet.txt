@@ -4,13 +4,14 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\map\[id]\page.tsx
 
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
   ArrowLeft, Leaf, MapPin, Package, Wheat, TrendingUp,
-  Users, BarChart2, Layers, AlertCircle,
+  Users, BarChart2, Layers, AlertCircle, ExternalLink,
+  Building2, Factory, Store, TrendingDown, Calendar,
 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 import type { MapLevel } from '@/types/api';
@@ -19,12 +20,9 @@ import {
   getRegionProductions, getDepartementProductions, getCommuneProductions,
   getRegionDepartements, getDepartementCommunes, getCommuneInfrastructures,
   getRegionsGeoJSON, getDepartementsGeoJSON, getCommunesGeoJSON,
-  getProductions,
+  getFilieres, getCategories, getProduits,
 } from '@/lib/api';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 
-// ── Mini map rendered client-side only ──────────────────────────────────────
 const DetailMap = dynamic(() => import('@/components/DetailMap'), {
   ssr: false,
   loading: () => (
@@ -35,19 +33,21 @@ const DetailMap = dynamic(() => import('@/components/DetailMap'), {
 });
 
 export default function DetailPage({ params }: { params: { id: string } }) {
-  const id          = Number(params.id);
+  const id = Number(params.id);
   const searchParams = useSearchParams();
-  const level       = (searchParams.get('level') || 'regions') as MapLevel;
+  const level = (searchParams.get('level') || 'regions') as MapLevel;
 
-  const [entity,         setEntity]         = useState<any>(null);
-  const [productions,    setProductions]    = useState<any[]>([]);
-  const [children,       setChildren]       = useState<any[]>([]);   // dept / communes
-  const [infrastructures,setInfrastructures] = useState<any[]>([]);
-  const [geoData,        setGeoData]        = useState<any>(null);
-  const [loading,        setLoading]        = useState(true);
-  const [error,          setError]          = useState<string | null>(null);
+  const [entity, setEntity] = useState<any>(null);
+  const [productions, setProductions] = useState<any[]>([]);
+  const [children, setChildren] = useState<any[]>([]);
+  const [infrastructures, setInfrastructures] = useState<any[]>([]);
+  const [filieres, setFilieres] = useState<any[]>([]);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [produits, setProduits] = useState<any[]>([]);
+  const [geoData, setGeoData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // ── Fetch everything in parallel ─────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -58,6 +58,18 @@ export default function DetailPage({ params }: { params: { id: string } }) {
 
       try {
         let ent: any, prods: any[], kids: any[], infras: any[], geo: any;
+        let fils: any, cats: any, prts: any;
+
+        // Charger les données de base
+        const [filieresData, categoriesData, produitsData] = await Promise.all([
+          getFilieres(0, 100),
+          getCategories(0, 100),
+          getProduits(0, 100),
+        ]);
+
+        fils = filieresData.items;
+        cats = categoriesData.items;
+        prts = produitsData.items;
 
         switch (level) {
           case 'regions': {
@@ -95,15 +107,20 @@ export default function DetailPage({ params }: { params: { id: string } }) {
         }
 
         if (cancelled) return;
+
         setEntity(ent);
         setProductions(Array.isArray(prods) ? prods : (prods?.items || []));
         setChildren(Array.isArray(kids) ? kids : (kids?.items || []));
         setInfrastructures(Array.isArray(infras) ? infras : (infras?.items || []));
+        setFilieres(fils);
+        setCategories(cats);
+        setProduits(prts);
         setGeoData(geo);
+
         console.log(`✅ [DetailPage] All data loaded for ${ent?.nom}`);
       } catch (e: any) {
         if (!cancelled) {
-          console.error('[DetailPage] fetch error', e);
+          console.error('❌ [DetailPage] fetch error', e);
           setError(e.message || 'Erreur de chargement');
         }
       } finally {
@@ -121,14 +138,39 @@ export default function DetailPage({ params }: { params: { id: string } }) {
     n != null ? `${new Intl.NumberFormat('fr-FR').format(n)} FCFA` : '—';
 
   const totalQuantite = productions.reduce((s, p) => s + (p.quantite || 0), 0);
-  const totalValeur   = productions.reduce((s, p) => s + (p.valeur_fcfa || 0), 0);
+  const totalValeur = productions.reduce((s, p) => s + (p.valeur_fcfa || 0), 0);
   const totalProducteurs = productions.reduce((s, p) => s + (p.nombre_producteurs || 0), 0);
+  const totalSuperficie = productions.reduce((s, p) => s + (p.superficie_ha || 0), 0);
 
   const childLabel = level === 'regions' ? 'Départements' : level === 'departements' ? 'Communes' : '';
+  
   const infraIconMap: Record<string, string> = {
-    marché: '🏪', entrepôt: '🏭', coopérative: '🤝',
-    usine_transformation: '⚙️', point_collecte: '📦',
+    marché: '🏪',
+    entrepôt: '🏭',
+    coopérative: '🤝',
+    usine_transformation: '⚙️',
+    point_collecte: '📦',
   };
+
+  // Grouper productions par filière
+  const productionsByFiliere = productions.reduce((acc: any, prod: any) => {
+    const produit = produits.find(p => p.id === prod.produit_id);
+    if (!produit) return acc;
+    
+    const categorie = categories.find(c => c.id === produit.categorie_id);
+    if (!categorie) return acc;
+    
+    const filiere = filieres.find(f => f.id === categorie.filiere_id);
+    if (!filiere) return acc;
+
+    const key = filiere.nom;
+    if (!acc[key]) {
+      acc[key] = { filiere, total: 0, count: 0 };
+    }
+    acc[key].total += prod.quantite || 0;
+    acc[key].count += 1;
+    return acc;
+  }, {});
 
   if (error) {
     return (
@@ -147,7 +189,7 @@ export default function DetailPage({ params }: { params: { id: string } }) {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* Header */}
       <header className="sticky top-0 z-30 bg-white/90 dark:bg-gray-950/90 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -159,8 +201,12 @@ export default function DetailPage({ params }: { params: { id: string } }) {
                 <Leaf className="w-4 h-4 text-white" />
               </div>
               <div>
-                <span className="text-sm font-bold text-gray-900 dark:text-white">{loading ? '…' : entity?.nom}</span>
-                <span className="text-xs text-gray-400 dark:text-gray-500 ml-2 capitalize">({level.slice(0,-1)})</span>
+                <span className="text-sm font-bold text-gray-900 dark:text-white">
+                  {loading ? '…' : entity?.nom}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 ml-2 capitalize">
+                  ({level.slice(0, -1)})
+                </span>
               </div>
             </div>
           </div>
@@ -169,32 +215,29 @@ export default function DetailPage({ params }: { params: { id: string } }) {
       </header>
 
       {loading ? (
-        /* ── Skeleton ──────────────────────────────────────────────────── */
+        /* Skeleton */
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-6">
-          <div className="h-64 bg-gray-200 dark:bg-gray-800 rounded-2xl animate-pulse" />
+          <div className="h-80 bg-gray-200 dark:bg-gray-800 rounded-2xl animate-pulse" />
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {[1,2,3,4].map(i => <div key={i} className="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />)}
-          </div>
-          <div className="grid md:grid-cols-2 gap-6">
-            <div className="h-48 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
-            <div className="h-48 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="h-32 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
+            ))}
           </div>
         </div>
       ) : (
         <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-
-          {/* ── Map hero ──────────────────────────────────────────────── */}
-          <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '320px' }}>
+          {/* Carte hero */}
+          <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '400px' }}>
             <DetailMap geoData={geoData} targetId={id} />
           </div>
 
-          {/* ── KPI cards ─────────────────────────────────────────────── */}
+          {/* KPI Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
             {[
-              { label: 'Population', value: fmt(entity?.population), icon: Users,    color: 'from-blue-400 to-blue-600',       delay: 'delay-50' },
+              { label: 'Population', value: fmt(entity?.population), icon: Users, color: 'from-blue-400 to-blue-600', delay: 'delay-50' },
               { label: 'Superficie', value: entity?.superficie_km2 ? `${fmt(entity.superficie_km2)} km²` : '—', icon: Layers, color: 'from-emerald-400 to-emerald-600', delay: 'delay-100' },
-              { label: 'Quantité produite', value: fmt(totalQuantite), icon: TrendingUp, color: 'from-amber-400 to-amber-600', delay: 'delay-150' },
-              { label: 'Valeur totale', value: fmtFCFA(totalValeur), icon: BarChart2, color: 'from-purple-400 to-purple-600', delay: 'delay-200' },
+              { label: 'Productions', value: fmt(productions.length), icon: Wheat, color: 'from-green-400 to-green-600', delay: 'delay-150' },
+              { label: 'Valeur totale', value: fmtFCFA(totalValeur), icon: TrendingUp, color: 'from-purple-400 to-purple-600', delay: 'delay-200' },
             ].map((kpi, i) => {
               const Icon = kpi.icon;
               return (
@@ -211,17 +254,40 @@ export default function DetailPage({ params }: { params: { id: string } }) {
             })}
           </div>
 
-          {/* ── Entity info + Chef lieu ───────────────────────────────── */}
-          <div className="anim-slideUp delay-200 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+          {/* Productions par filière */}
+          {Object.keys(productionsByFiliere).length > 0 && (
+            <div className="anim-slideUp delay-250 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+              <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <Wheat className="w-4 h-4 text-green-500" /> Productions par filière
+              </h3>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Object.entries(productionsByFiliere).map(([nom, data]: [string, any], i) => (
+                  <div key={i} className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg p-4 border border-green-200 dark:border-green-800">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-lg" style={{ backgroundColor: data.filiere.couleur || '#22c55e' }}>
+                        {data.filiere.icone || '🌾'}
+                      </div>
+                      <h4 className="font-semibold text-gray-800 dark:text-gray-200">{nom}</h4>
+                    </div>
+                    <p className="text-2xl font-bold text-green-600 dark:text-green-400">{fmt(data.total)}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{data.count} production{data.count > 1 ? 's' : ''}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Entity info */}
+          <div className="anim-slideUp delay-300 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
             <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
               <MapPin className="w-4 h-4 text-green-500" /> Informations générales
             </h3>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
               {entity && Object.entries(entity).map(([k, v]) => {
-                if (['id','created_at','updated_at'].includes(k) || v == null) return null;
+                if (['id', 'created_at', 'updated_at'].includes(k) || v == null) return null;
                 return (
                   <div key={k} className="flex flex-col">
-                    <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">{k.replace(/_/g,' ')}</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide">{k.replace(/_/g, ' ')}</span>
                     <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
                       {Array.isArray(v) ? v.join(', ') : String(v)}
                     </span>
@@ -231,20 +297,19 @@ export default function DetailPage({ params }: { params: { id: string } }) {
             </div>
           </div>
 
-          {/* ── Two-column: children + infrastructures ───────────────── */}
+          {/* Children & Infrastructures */}
           <div className="grid md:grid-cols-2 gap-4 lg:gap-6">
-            {/* Children (départements / communes) */}
             {childLabel && (
-              <div className="anim-slideUp delay-250 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+              <div className="anim-slideUp delay-350 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
                 <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
                   <Layers className="w-4 h-4 text-green-500" /> {childLabel} <span className="text-green-500">({children.length})</span>
                 </h3>
                 {children.length === 0 ? (
-                  <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune donnée disponible</p>
+                  <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune donnée</p>
                 ) : (
                   <div className="space-y-2 max-h-56 overflow-y-auto scrollbar-thin pr-1">
                     {children.map((c: any, i: number) => (
-                      <div key={c.id || i} className={`anim-slideUp delay-${Math.min((i+1)*50, 500)} flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2`}>
+                      <div key={c.id || i} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2">
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{c.nom}</span>
                         {c.population && <span className="text-xs text-gray-400 dark:text-gray-500">{fmt(c.population)} hab.</span>}
                       </div>
@@ -254,13 +319,12 @@ export default function DetailPage({ params }: { params: { id: string } }) {
               </div>
             )}
 
-            {/* Infrastructures */}
-            <div className="anim-slideUp delay-300 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+            <div className="anim-slideUp delay-400 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
               <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
                 <Package className="w-4 h-4 text-green-500" /> Infrastructures <span className="text-green-500">({infrastructures.length})</span>
               </h3>
               {infrastructures.length === 0 ? (
-                <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune infrastructure répertoriée</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 italic">Aucune infrastructure</p>
               ) : (
                 <div className="space-y-2 max-h-56 overflow-y-auto scrollbar-thin pr-1">
                   {infrastructures.map((inf: any, i: number) => (
@@ -268,7 +332,11 @@ export default function DetailPage({ params }: { params: { id: string } }) {
                       <span className="text-lg">{infraIconMap[inf.type_infrastructure] || '🏗️'}</span>
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 truncate">{inf.nom}</p>
-                        {inf.type_infrastructure && <p className="text-xs text-gray-400 dark:text-gray-500 capitalize">{inf.type_infrastructure.replace(/_/g,' ')}</p>}
+                        {inf.type_infrastructure && (
+                          <p className="text-xs text-gray-400 dark:text-gray-500 capitalize">
+                            {inf.type_infrastructure.replace(/_/g, ' ')}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -277,11 +345,11 @@ export default function DetailPage({ params }: { params: { id: string } }) {
             </div>
           </div>
 
-          {/* ── Productions table ────────────────────────────────────── */}
+          {/* Productions table */}
           {productions.length > 0 && (
-            <div className="anim-slideUp delay-350 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
+            <div className="anim-slideUp delay-450 bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 p-5">
               <h3 className="text-sm font-display font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                <Wheat className="w-4 h-4 text-green-500" /> Productions <span className="text-green-500">({productions.length})</span>
+                <BarChart2 className="w-4 h-4 text-green-500" /> Productions détaillées <span className="text-green-500">({productions.length})</span>
               </h3>
               <div className="overflow-x-auto rounded-lg border border-gray-100 dark:border-gray-800">
                 <table className="w-full text-sm">
@@ -289,19 +357,19 @@ export default function DetailPage({ params }: { params: { id: string } }) {
                     <tr className="bg-gray-50 dark:bg-gray-800 text-left">
                       <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Année</th>
                       <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Quantité</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Valeur (FCFA)</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Valeur</th>
                       <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Producteurs</th>
-                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Saison</th>
+                      <th className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Superficie</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {productions.slice(0, 15).map((p: any, i: number) => (
+                    {productions.slice(0, 20).map((p: any, i: number) => (
                       <tr key={p.id || i} className="border-t border-gray-100 dark:border-gray-800 hover:bg-green-50/40 dark:hover:bg-green-900/20 transition-colors">
                         <td className="px-3 py-2 font-semibold text-gray-700 dark:text-gray-300">{p.annee}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmt(p.quantite)}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmtFCFA(p.valeur_fcfa)}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{fmt(p.nombre_producteurs)}</td>
-                        <td className="px-3 py-2 text-gray-500 dark:text-gray-500 capitalize">{p.saison || '—'}</td>
+                        <td className="px-3 py-2 text-gray-500 dark:text-gray-500">{p.superficie_ha ? `${fmt(p.superficie_ha)} ha` : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -310,15 +378,15 @@ export default function DetailPage({ params }: { params: { id: string } }) {
             </div>
           )}
 
-          {/* ── Producteurs summary ──────────────────────────────────── */}
+          {/* Producteurs summary */}
           {totalProducteurs > 0 && (
-            <div className="anim-slideUp delay-400 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl border border-green-200 dark:border-green-800 p-5 flex items-center gap-5">
+            <div className="anim-slideUp delay-500 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl border border-green-200 dark:border-green-800 p-5 flex items-center gap-5">
               <div className="w-14 h-14 rounded-full bg-green-100 dark:bg-green-800/40 flex items-center justify-center flex-shrink-0">
                 <Users className="w-7 h-7 text-green-600 dark:text-green-300" />
               </div>
               <div>
                 <p className="text-2xl font-display font-extrabold text-gray-900 dark:text-white">{fmt(totalProducteurs)}</p>
-                <p className="text-sm text-gray-500 dark:text-gray-400">Producteurs répertoriés dans cette zone</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Producteurs répertoriés</p>
               </div>
             </div>
           )}
@@ -335,79 +403,166 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\map\page.tsx
 
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { ArrowLeft, Leaf, BarChart3 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
-import Sidebar from '@/components/Sidebar';
 import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
 import {
   getRegionsGeoJSON, getDepartementsGeoJSON, getCommunesGeoJSON,
   getRegion, getDepartement, getCommuneResume,
   getRegionProductions, getDepartementProductions,
+  getProductions,
 } from '@/lib/api';
 
+// ✨ Chargement dynamique sans SSR pour performance maximale ✨
 const MapView = dynamic(() => import('@/components/MapView'), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
+    <div className="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-900 dark:to-gray-950 flex items-center justify-center rounded-xl">
       <div className="text-center">
-        <div className="inline-block w-14 h-14 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-3" />
-        <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement de la carte…</p>
+        <div className="inline-block w-16 h-16 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-gray-600 dark:text-gray-400 text-base font-semibold animate-pulse">
+          Chargement de la carte MapTiler…
+        </p>
+        <p className="text-gray-400 dark:text-gray-500 text-xs mt-2">
+          Initialisation des tuiles haute performance
+        </p>
       </div>
     </div>
   ),
 });
 
+// Chargement différé du Sidebar (non visible initialement sur mobile)
+const Sidebar = dynamic(() => import('@/components/Sidebar'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-800 flex items-center justify-center">
+      <div className="inline-block w-8 h-8 border-3 border-green-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  ),
+});
+
 export default function MapPage() {
-  const [mapLevel, setMapLevel]           = useState<MapLevel>('regions');
-  const [geoData, setGeoData]             = useState<GeoJSONFeatureCollection | null>(null);
-  const [loading, setLoading]             = useState(true);
-  const [selectedEntity, setSelectedEntity]   = useState<any>(null);
+  const [mapLevel, setMapLevel] = useState<MapLevel>('regions');
+  const [geoData, setGeoData] = useState<GeoJSONFeatureCollection | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedEntity, setSelectedEntity] = useState<any>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | null>(null);
 
   const [filters, setFilters] = useState({
-    filiere_id  : null as number | null,
+    filiere_id: null as number | null,
     categorie_id: null as number | null,
-    produit_id  : null as number | null,
-    annee       : null as number | null,
+    produit_id: null as number | null,
+    annee: null as number | null,
   });
 
-  // ── Load GeoJSON whenever level changes ──────────────────────────────────
+  // ── Load GeoJSON + Filter (avec cache et optimisation) ────────────────────
   const loadGeoData = useCallback(async () => {
-    console.log(`🗺️  [MapPage] Loading GeoJSON for level: ${mapLevel}`);
+    const startTime = performance.now();
+    console.log(
+      `%c🗺️  [MapPage] Loading GeoJSON for level: ${mapLevel}`,
+      'color: #3b82f6; font-weight: bold',
+      filters
+    );
+    
     setLoading(true);
+    
     try {
       let data: GeoJSONFeatureCollection;
+      
       switch (mapLevel) {
-        case 'regions':      data = await getRegionsGeoJSON();      break;
-        case 'departements': data = await getDepartementsGeoJSON(); break;
-        case 'communes':     data = await getCommunesGeoJSON();     break;
-        default:             data = await getRegionsGeoJSON();
+        case 'regions':
+          data = await getRegionsGeoJSON();
+          break;
+        case 'departements':
+          data = await getDepartementsGeoJSON(filters.filiere_id || undefined);
+          break;
+        case 'communes':
+          data = await getCommunesGeoJSON();
+          break;
+        default:
+          data = await getRegionsGeoJSON();
       }
+
+      // Enrichir avec les productions si filtrées
+      if (filters.produit_id || filters.filiere_id || filters.annee) {
+        console.log('%c📊 [MapPage] Enriching GeoJSON with production data...', 'color: #8b5cf6; font-weight: bold');
+        
+        const productionsData = await getProductions({
+          filiere_id: filters.filiere_id,
+          categorie_id: filters.categorie_id,
+          produit_id: filters.produit_id,
+          annee: filters.annee,
+          limit: 500,
+        });
+
+        const productions = productionsData.items || [];
+
+        // Grouper par zone
+        const productionsByZone = productions.reduce((acc: any, prod: any) => {
+          let zoneId: number | null = null;
+          
+          if (mapLevel === 'regions') zoneId = prod.region_id;
+          else if (mapLevel === 'departements') zoneId = prod.departement_id;
+          else if (mapLevel === 'communes') zoneId = prod.commune_id;
+
+          if (!zoneId) return acc;
+
+          if (!acc[zoneId]) {
+            acc[zoneId] = { total: 0, count: 0 };
+          }
+          acc[zoneId].total += prod.quantite || 0;
+          acc[zoneId].count += 1;
+          return acc;
+        }, {});
+
+        // Enrichir features
+        data.features = data.features.map(feature => ({
+          ...feature,
+          properties: {
+            ...feature.properties,
+            production_total: productionsByZone[feature.properties.id]?.total || 0,
+            production_count: productionsByZone[feature.properties.id]?.count || 0,
+          },
+        }));
+
+        console.log(`%c✅ [MapPage] Enriched ${data.features.length} features with production data`, 'color: #22c55e; font-weight: bold');
+      }
+
       setGeoData(data);
-      console.log(`✅ [MapPage] GeoJSON loaded — ${data.features.length} features`);
+      
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`%c✅ [MapPage] GeoJSON loaded in ${elapsed}ms — ${data.features.length} features`, 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('[MapPage] GeoJSON load failed', e);
+      console.error('%c❌ [MapPage] GeoJSON load failed:', 'color: #ef4444; font-weight: bold', e);
     } finally {
       setLoading(false);
     }
-  }, [mapLevel]);
+  }, [mapLevel, filters]);
 
-  useEffect(() => { loadGeoData(); }, [loadGeoData]);
+  useEffect(() => {
+    loadGeoData();
+  }, [loadGeoData]);
 
-  // ── Feature click → fetch detail + zoom ──────────────────────────────────
+  // ── Feature click ─────────────────────────────────────────────────────────
   const handleFeatureClick = useCallback(async (properties: any) => {
-    console.log(`🖱️  [MapPage] Feature clicked`, properties);
+    console.log(`%c🖱️  [MapPage] Feature clicked:`, 'color: #8b5cf6; font-weight: bold', properties);
     setSelectedFeatureId(properties.id);
+    
     try {
       let entityData: any;
+      
       switch (mapLevel) {
         case 'regions': {
           entityData = await getRegion(properties.id);
           if (filters.produit_id || filters.annee) {
-            const prods = await getRegionProductions(properties.id, filters.annee || undefined, filters.produit_id || undefined);
+            const prods = await getRegionProductions(
+              properties.id,
+              filters.annee || undefined,
+              filters.produit_id || undefined
+            );
             entityData = { ...entityData, productions: prods };
           }
           break;
@@ -415,7 +570,11 @@ export default function MapPage() {
         case 'departements': {
           entityData = await getDepartement(properties.id);
           if (filters.produit_id || filters.annee) {
-            const prods = await getDepartementProductions(properties.id, filters.annee || undefined, filters.produit_id || undefined);
+            const prods = await getDepartementProductions(
+              properties.id,
+              filters.annee || undefined,
+              filters.produit_id || undefined
+            );
             entityData = { ...entityData, productions: prods };
           }
           break;
@@ -426,15 +585,22 @@ export default function MapPage() {
         default:
           entityData = properties;
       }
+      
       setSelectedEntity(entityData);
+      console.log('%c✅ [MapPage] Entity data loaded', 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('[MapPage] Detail fetch failed — fallback to properties', e);
+      console.error('%c❌ [MapPage] Detail fetch failed:', 'color: #ef4444; font-weight: bold', e);
       setSelectedEntity(properties);
     }
-  }, [mapLevel, filters.produit_id, filters.annee]);
+  }, [mapLevel, filters]);
 
-  const handleFilterChange  = useCallback((nf: any) => { setFilters(nf); }, []);
+  const handleFilterChange = useCallback((nf: any) => {
+    console.log('%c🔄 [MapPage] Filters changed:', 'color: #f59e0b; font-weight: bold', nf);
+    setFilters(nf);
+  }, []);
+
   const handleMapLevelChange = useCallback((level: MapLevel) => {
+    console.log(`%c🗺️  [MapPage] Map level changed to: ${level}`, 'color: #3b82f6; font-weight: bold');
     setMapLevel(level);
     setSelectedEntity(null);
     setSelectedFeatureId(null);
@@ -443,29 +609,39 @@ export default function MapPage() {
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-950">
       {/* Header */}
-      <header className="flex-shrink-0 bg-white dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 z-10">
+      <header className="flex-shrink-0 bg-white/95 dark:bg-gray-950/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 z-10">
         <div className="px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all">
               <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-300" />
             </Link>
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 bg-gradient-to-br from-green-400 to-emerald-600 rounded-xl flex items-center justify-center">
+              <div className="w-9 h-9 bg-gradient-to-br from-green-400 to-emerald-600 rounded-xl flex items-center justify-center shadow-lg">
                 <Leaf className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-base font-display font-bold text-gray-900 dark:text-white leading-tight">AgriVision</h1>
-                <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">{mapLevel}</p>
+                <h1 className="text-base font-display font-bold text-gray-900 dark:text-white leading-tight">
+                  AgriVision
+                </h1>
+                <p className="text-xs text-gray-500 dark:text-gray-400 capitalize flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  {mapLevel}
+                </p>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <Link href="/stats" className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-all">
+            <Link
+              href="/stats"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-lg text-sm font-medium transition-all shadow-md hover:shadow-lg"
+            >
               <BarChart3 className="w-4 h-4" /> Stats
             </Link>
-            <div className="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg">
-              <span className="text-xs font-semibold">{geoData ? `${geoData.features.length} zones` : '…'}</span>
+            <div className="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg border border-green-200 dark:border-green-800">
+              <span className="text-xs font-semibold">
+                {geoData ? `${geoData.features.length} zones` : '…'}
+              </span>
             </div>
             <ThemeToggle />
           </div>
@@ -485,7 +661,7 @@ export default function MapPage() {
         </div>
 
         {/* Map */}
-        <div className="flex-1 p-3 md:p-5 overflow-hidden">
+        <div className="flex-1 p-3 md:p-5 overflow-hidden bg-gradient-to-br from-gray-50 to-white dark:from-gray-950 dark:to-gray-900">
           <MapView
             geoData={geoData}
             loading={loading}
@@ -494,6 +670,466 @@ export default function MapPage() {
             selectedFeatureId={selectedFeatureId}
           />
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+FICHIER: D:\5GI\Projet-TI\webmap\app\stats\page.tsx
+================================================================================
+
+'use client';
+
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import {
+  ArrowLeft, Leaf, TrendingUp, TrendingDown, BarChart3,
+  Calendar, MapPin, Package, Users, Award, Activity,
+} from 'lucide-react';
+import ThemeToggle from '@/components/ThemeToggle';
+import {
+  getStatistiquesGlobales,
+  getStatistiquesProduction,
+  getEvolutionProduction,
+  getTopRegions,
+  getTopProduits,
+  comparerAnnees,
+  getAnneesDisponibles,
+  getFilieres,
+  getProduits,
+} from '@/lib/api';
+import { SkeletonStat } from '@/components/Skeleton';
+
+export default function StatsPage() {
+  const [statsGlobales, setStatsGlobales] = useState<any>(null);
+  const [statsProduction, setStatsProduction] = useState<any>(null);
+  const [evolution, setEvolution] = useState<any[]>([]);
+  const [topRegions, setTopRegions] = useState<any[]>([]);
+  const [topProduits, setTopProduits] = useState<any[]>([]);
+  const [comparaison, setComparaison] = useState<any>(null);
+  const [annees, setAnnees] = useState<number[]>([]);
+  const [filieres, setFilieres] = useState<any[]>([]);
+  const [produits, setProduits] = useState<any[]>([]);
+
+  const [selectedAnnee, setSelectedAnnee] = useState<number | null>(null);
+  const [selectedFiliere, setSelectedFiliere] = useState<number | null>(null);
+  const [selectedProduit, setSelectedProduit] = useState<number | null>(null);
+  const [anneeRef, setAnneeRef] = useState<number | null>(null);
+  const [anneeCmp, setAnneeCmp] = useState<number | null>(null);
+
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview' | 'evolution' | 'top' | 'comparison'>('overview');
+
+  useEffect(() => {
+    loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    if (selectedAnnee || selectedFiliere || selectedProduit) {
+      loadFilteredData();
+    }
+  }, [selectedAnnee, selectedFiliere, selectedProduit]);
+
+  useEffect(() => {
+    if (anneeRef && anneeCmp && anneeRef !== anneeCmp) {
+      loadComparaison();
+    }
+  }, [anneeRef, anneeCmp]);
+
+  const loadInitialData = async () => {
+    console.log('📊 [StatsPage] Loading initial data...');
+    setLoading(true);
+
+    try {
+      const [globales, production, anneesData, filieresData, produitsData] = await Promise.all([
+        getStatistiquesGlobales(),
+        getStatistiquesProduction(),
+        getAnneesDisponibles(),
+        getFilieres(0, 100),
+        getProduits(0, 100),
+      ]);
+
+      setStatsGlobales(globales);
+      setStatsProduction(production);
+      setAnnees(anneesData.sort((a: number, b: number) => b - a));
+      setFilieres(filieresData.items);
+      setProduits(produitsData.items);
+
+      // Charger top regions et produits
+      const [regions, products] = await Promise.all([
+        getTopRegions(undefined, undefined, 10),
+        getTopProduits(undefined, undefined, 10),
+      ]);
+
+      setTopRegions(regions);
+      setTopProduits(products);
+
+      console.log('✅ [StatsPage] Initial data loaded');
+    } catch (error) {
+      console.error('❌ [StatsPage] Error loading data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadFilteredData = async () => {
+    console.log('🔄 [StatsPage] Loading filtered data...');
+    
+    try {
+      const [evo, regions, products] = await Promise.all([
+        getEvolutionProduction(selectedProduit || undefined, undefined, undefined, undefined),
+        getTopRegions(selectedAnnee || undefined, selectedProduit || undefined, 10),
+        getTopProduits(selectedAnnee || undefined, undefined, 10),
+      ]);
+
+      setEvolution(evo);
+      setTopRegions(regions);
+      setTopProduits(products);
+
+      console.log('✅ [StatsPage] Filtered data loaded');
+    } catch (error) {
+      console.error('❌ [StatsPage] Error loading filtered data:', error);
+    }
+  };
+
+  const loadComparaison = async () => {
+    if (!anneeRef || !anneeCmp) return;
+
+    console.log(`🔄 [StatsPage] Comparing years ${anneeRef} vs ${anneeCmp}`);
+
+    try {
+      const comp = await comparerAnnees(anneeRef, anneeCmp, selectedProduit || undefined);
+      setComparaison(comp);
+      console.log('✅ [StatsPage] Comparison loaded');
+    } catch (error) {
+      console.error('❌ [StatsPage] Error loading comparison:', error);
+    }
+  };
+
+  const fmt = (n: number | null | undefined) =>
+    n != null ? new Intl.NumberFormat('fr-FR').format(n) : '—';
+
+  const fmtFCFA = (n: number | null | undefined) =>
+    n != null ? `${new Intl.NumberFormat('fr-FR').format(n)} FCFA` : '—';
+
+  const tabs = [
+    { id: 'overview', label: 'Vue d\'ensemble', icon: Activity },
+    { id: 'evolution', label: 'Évolution', icon: TrendingUp },
+    { id: 'top', label: 'Classements', icon: Award },
+    { id: 'comparison', label: 'Comparaison', icon: BarChart3 },
+  ] as const;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-white via-green-50 to-emerald-50 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
+      {/* Header */}
+      <header className="sticky top-0 z-30 bg-white/90 dark:bg-gray-950/90 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-all">
+              <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+            </Link>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-gradient-to-br from-green-400 to-emerald-600 rounded-lg flex items-center justify-center">
+                <BarChart3 className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <h1 className="text-sm font-bold text-gray-900 dark:text-white">Statistiques</h1>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Analyse des productions</p>
+              </div>
+            </div>
+          </div>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {/* Filters */}
+      <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+        <div className="grid sm:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+              <Calendar className="w-3 h-3 inline mr-1" /> Année
+            </label>
+            <select
+              value={selectedAnnee || ''}
+              onChange={e => setSelectedAnnee(e.target.value ? Number(e.target.value) : null)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            >
+              <option value="">Toutes les années</option>
+              {annees.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+              <Leaf className="w-3 h-3 inline mr-1" /> Filière
+            </label>
+            <select
+              value={selectedFiliere || ''}
+              onChange={e => setSelectedFiliere(e.target.value ? Number(e.target.value) : null)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            >
+              <option value="">Toutes les filières</option>
+              {filieres.map(f => <option key={f.id} value={f.id}>{f.nom}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+              <Package className="w-3 h-3 inline mr-1" /> Produit
+            </label>
+            <select
+              value={selectedProduit || ''}
+              onChange={e => setSelectedProduit(e.target.value ? Number(e.target.value) : null)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm"
+            >
+              <option value="">Tous les produits</option>
+              {produits.map(p => <option key={p.id} value={p.id}>{p.nom}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="max-w-7xl mx-auto px-4 md:px-6 py-4">
+        <div className="flex gap-2 overflow-x-auto scrollbar-thin pb-2">
+          {tabs.map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium whitespace-nowrap transition-all ${
+                  isActive
+                    ? 'bg-green-500 text-white shadow-lg'
+                    : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-green-50 dark:hover:bg-green-900/20'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="max-w-7xl mx-auto px-4 md:px-6 py-6">
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[1, 2, 3, 4].map(i => <SkeletonStat key={i} />)}
+          </div>
+        ) : (
+          <>
+            {/* Overview Tab */}
+            {activeTab === 'overview' && (
+              <div className="space-y-6 anim-fadeIn">
+                {/* Global Stats */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {[
+                    { label: 'Régions', value: statsGlobales?.total_regions, icon: MapPin, color: 'blue' },
+                    { label: 'Filières', value: statsGlobales?.total_filieres, icon: Leaf, color: 'green' },
+                    { label: 'Produits', value: statsGlobales?.total_produits, icon: Package, color: 'purple' },
+                    { label: 'Productions', value: statsGlobales?.total_productions, icon: TrendingUp, color: 'orange' },
+                  ].map((stat, i) => {
+                    const Icon = stat.icon;
+                    return (
+                      <div key={i} className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className={`p-3 rounded-xl bg-${stat.color}-500`}>
+                            <Icon className="w-6 h-6 text-white" />
+                          </div>
+                        </div>
+                        <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">
+                          {fmt(stat.value)}
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">{stat.label}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Production Stats */}
+                {statsProduction && (
+                  <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm">
+                    <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4">Statistiques de production</h2>
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {Object.entries(statsProduction).map(([key, value]: [string, any]) => (
+                        <div key={key} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                          <div className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+                            {key.replace(/_/g, ' ')}
+                          </div>
+                          <div className="text-xl font-bold text-gray-900 dark:text-white">
+                            {typeof value === 'number' ? fmt(value) : String(value)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Evolution Tab */}
+            {activeTab === 'evolution' && (
+              <div className="anim-fadeIn">
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4">Évolution de la production</h2>
+                  {evolution.length === 0 ? (
+                    <p className="text-gray-500 dark:text-gray-400 text-center py-8">
+                      Sélectionnez un produit pour voir son évolution
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {evolution.map((item: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                          <div className="flex items-center gap-3">
+                            <Calendar className="w-5 h-5 text-green-500" />
+                            <div>
+                              <div className="font-semibold text-gray-900 dark:text-white">{item.annee || item.periode}</div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400">
+                                {item.nombre_productions || 0} production{(item.nombre_productions || 0) > 1 ? 's' : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-lg font-bold text-green-600 dark:text-green-400">
+                              {fmt(item.total_quantite || item.quantite)}
+                            </div>
+                            {item.total_valeur_fcfa && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400">
+                                {fmtFCFA(item.total_valeur_fcfa)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Top Tab */}
+            {activeTab === 'top' && (
+              <div className="grid md:grid-cols-2 gap-6 anim-fadeIn">
+                {/* Top Regions */}
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                    <Award className="w-5 h-5 text-yellow-500" /> Top Régions
+                  </h2>
+                  <div className="space-y-3">
+                    {topRegions.map((region: any, i: number) => (
+                      <div key={i} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white ${
+                          i === 0 ? 'bg-yellow-500' : i === 1 ? 'bg-gray-400' : i === 2 ? 'bg-orange-600' : 'bg-gray-300 dark:bg-gray-700'
+                        }`}>
+                          {i + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-white truncate">
+                            {region.nom || `Région ${region.region_id}`}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            {fmt(region.total_quantite)} • {fmtFCFA(region.total_valeur_fcfa)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Top Produits */}
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                    <Award className="w-5 h-5 text-green-500" /> Top Produits
+                  </h2>
+                  <div className="space-y-3">
+                    {topProduits.map((produit: any, i: number) => (
+                      <div key={i} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white ${
+                          i === 0 ? 'bg-green-500' : i === 1 ? 'bg-emerald-400' : i === 2 ? 'bg-teal-600' : 'bg-gray-300 dark:bg-gray-700'
+                        }`}>
+                          {i + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-white truncate">
+                            {produit.nom || `Produit ${produit.produit_id}`}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            {fmt(produit.total_quantite)} • {fmtFCFA(produit.total_valeur_fcfa)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Comparison Tab */}
+            {activeTab === 'comparison' && (
+              <div className="anim-fadeIn space-y-6">
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-800 shadow-sm">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4">Comparaison entre années</h2>
+                  
+                  <div className="grid sm:grid-cols-2 gap-4 mb-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Année de référence
+                      </label>
+                      <select
+                        value={anneeRef || ''}
+                        onChange={e => setAnneeRef(e.target.value ? Number(e.target.value) : null)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900"
+                      >
+                        <option value="">Sélectionner...</option>
+                        {annees.map(a => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Année de comparaison
+                      </label>
+                      <select
+                        value={anneeCmp || ''}
+                        onChange={e => setAnneeCmp(e.target.value ? Number(e.target.value) : null)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900"
+                      >
+                        <option value="">Sélectionner...</option>
+                        {annees.map(a => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  {comparaison ? (
+                    <div className="space-y-4">
+                      {Object.entries(comparaison).map(([key, value]: [string, any]) => {
+                        if (key === 'annee_reference' || key === 'annee_comparaison') return null;
+                        return (
+                          <div key={key} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                            <div className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                              {key.replace(/_/g, ' ').toUpperCase()}
+                            </div>
+                            <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                              {typeof value === 'number' ? fmt(value) : String(value)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-gray-500 dark:text-gray-400 text-center py-8">
+                      Sélectionnez deux années différentes pour comparer
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -677,12 +1313,14 @@ export default function HomePage() {
                 <ArrowRight className="w-6 h-6" />
               </Link>
               
-              <button className="px-8 py-4 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-white font-bold rounded-xl border-2 border-gray-200 dark:border-gray-700 transition-all transform hover:scale-105 shadow-lg text-lg"
+              <Link
+                href="/stats"
+                className="px-8 py-4 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-white font-bold rounded-xl border-2 border-gray-200 dark:border-gray-700 transition-all transform hover:scale-105 shadow-lg text-lg"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem' }}
               >
                 <BarChart3 className="w-6 h-6" />
                 Voir les statistiques
-              </button>
+              </Link>
             </div>
           </div>
 
@@ -1102,11 +1740,12 @@ FICHIER: D:\5GI\Projet-TI\webmap\components\MapView.tsx
 
 'use client';
 
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { GeoJSONFeatureCollection, MapLevel } from '@/types/api';
-import { SkeletonMap } from './Skeleton';
+
+const MAPTILER_API_KEY = "Lr72DkH8TYyjpP7RNZS9";
 
 interface MapViewProps {
   geoData: GeoJSONFeatureCollection | null;
@@ -1116,7 +1755,18 @@ interface MapViewProps {
   selectedFeatureId?: number | null;
 }
 
-export default function MapView({
+// Skeleton intégré pour éviter une dépendance externe
+const MapSkeleton = () => (
+  <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center rounded-xl">
+    <div className="text-center">
+      <div className="inline-block w-14 h-14 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-3" />
+      <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement de la carte…</p>
+    </div>
+  </div>
+);
+
+// Memoize le composant pour éviter les re-renders inutiles
+export default memo(function MapView({
   geoData,
   loading,
   mapLevel,
@@ -1127,18 +1777,18 @@ export default function MapView({
   const geoJsonLayerRef = useRef<L.GeoJSON | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
-
-  // ✅ OPTIMISATION : stocker onFeatureClick dans un ref
-  // Ça évite de relancer le useEffect chaque fois que la fonction change
   const onFeatureClickRef = useRef(onFeatureClick);
+
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick;
   }, [onFeatureClick]);
 
-  // ─── Initialisation de la carte (une seule fois) ─────────────────────────
+  // ── Initialisation carte (une seule fois) avec MapTiler ──────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
+    console.log('%c🗺️  [MapView] Initializing MapTiler map...', 'color: #22c55e; font-weight: bold');
+    
     try {
       const map = L.map(mapContainerRef.current, {
         center: [7.3697, 12.3547],
@@ -1148,37 +1798,59 @@ export default function MapView({
         fadeAnimation: false,
         zoomAnimation: true,
         markerZoomAnimation: false,
+        attributionControl: false,
       });
 
+      // Contrôle de zoom
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap',
-        maxZoom: 19,
-        minZoom: 5,
-        updateWhenIdle: true,
-        updateWhenZooming: false,
-        keepBuffer: 2,
-      }).addTo(map);
+      // Attribution personnalisée
+      L.control.attribution({
+        position: 'bottomright',
+        prefix: false,
+      }).addAttribution(
+        '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a> ' +
+        '<a href="https://www.openstreetmap.org/copyright" target="_blank">© OpenStreetMap</a>'
+      ).addTo(map);
+
+      // ✨ MapTiler Streets (Haute Performance) ✨
+      L.tileLayer(
+        `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MAPTILER_API_KEY}`,
+        {
+          tileSize: 512,
+          zoomOffset: -1,
+          minZoom: 1,
+          maxZoom: 19,
+          crossOrigin: true,
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          keepBuffer: 4,
+        }
+      ).addTo(map);
 
       mapRef.current = map;
       setMapReady(true);
+      console.log('%c✅ [MapView] MapTiler initialized successfully', 'color: #22c55e; font-weight: bold');
     } catch (error) {
-      console.error('[MAP] Erreur d\'initialisation:', error);
+      console.error('%c❌ [MapView] Map initialization failed:', 'color: #ef4444; font-weight: bold', error);
     }
 
     return () => {
       if (mapRef.current) {
+        console.log('%c🗑️  [MapView] Cleaning up map instance', 'color: #f59e0b');
         mapRef.current.remove();
         mapRef.current = null;
         setMapReady(false);
       }
     };
-  }, []); // ✅ Pas de dépendance — s'exécute une seule fois
+  }, []);
 
-  // ─── Mise à jour du GeoJSON sur la carte ──────────────────────────────────
+  // ── Mise à jour GeoJSON (Ultra-optimisé) ──────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !mapReady || !geoData) return;
+
+    const startTime = performance.now();
+    console.log(`%c🔄 [MapView] Updating GeoJSON layer - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
 
     // Supprimer l'ancienne couche
     if (geoJsonLayerRef.current) {
@@ -1186,15 +1858,26 @@ export default function MapView({
       geoJsonLayerRef.current = null;
     }
 
-    // ✅ Style calculé une seule fois pour la couche courante
+    // Palette de couleurs par filière
+    const filiereColors: Record<string, string> = {
+      'agriculture': '#22c55e',
+      'élevage': '#f59e0b',
+      'pêche': '#3b82f6',
+      'foresterie': '#10b981',
+      'default': '#86efac'
+    };
+
     const getStyle = (feature: any) => {
       const isSelected = feature?.properties?.id === selectedFeatureId;
+      const filiere = feature?.properties?.filiere_principale?.toLowerCase() || 'default';
+      const baseColor = filiereColors[filiere] || filiereColors.default;
+
       return {
-        fillColor: isSelected ? '#22c55e' : '#86efac',
-        weight: isSelected ? 3 : 1,
+        fillColor: isSelected ? '#22c55e' : baseColor,
+        weight: isSelected ? 3 : 1.5,
         opacity: 1,
         color: isSelected ? '#15803d' : '#16a34a',
-        fillOpacity: isSelected ? 0.7 : 0.5,
+        fillOpacity: isSelected ? 0.85 : 0.65,
       };
     };
 
@@ -1206,30 +1889,38 @@ export default function MapView({
 
         const name = props.nom || props.name || 'Sans nom';
 
-        // Tooltip léger
-        layer.bindTooltip(name, {
+        // Tooltip enrichi
+        const tooltipContent = `
+          <div class="font-semibold text-base">${name}</div>
+          ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
+          ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
+          ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
+        `;
+
+        layer.bindTooltip(tooltipContent, {
           permanent: false,
           direction: 'center',
           className: 'map-tooltip',
-          opacity: 0.9,
+          opacity: 0.95,
         });
 
-        // ✅ On utilise le REF pour le callback — pas de re-rendu
+        // Click handler
         layer.on('click', () => {
+          console.log('%c🖱️  [MapView] Feature clicked:', 'color: #8b5cf6', props);
           if (onFeatureClickRef.current) {
             onFeatureClickRef.current(props);
           }
         });
 
-        // Hover
+        // Hover effects
         layer.on('mouseover', function (this: L.GeoJSON) {
-          this.setStyle({ fillOpacity: 0.7, weight: 2 });
+          this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
         });
         layer.on('mouseout', function (this: L.GeoJSON) {
           const isSelected = props.id === selectedFeatureId;
           this.setStyle({
-            fillOpacity: isSelected ? 0.7 : 0.5,
-            weight: isSelected ? 3 : 1,
+            fillOpacity: isSelected ? 0.85 : 0.65,
+            weight: isSelected ? 3 : 1.5,
           });
         });
       },
@@ -1238,24 +1929,29 @@ export default function MapView({
     geoJsonLayer.addTo(mapRef.current);
     geoJsonLayerRef.current = geoJsonLayer;
 
-    // Ajuster la vue sur les données
+    // Ajuster la vue
     try {
       const bounds = geoJsonLayer.getBounds();
       if (bounds.isValid()) {
         mapRef.current.fitBounds(bounds, {
           padding: [50, 50],
-          animate: false,
+          animate: true,
+          duration: 0.4,
         });
       }
     } catch (error) {
-      console.error('[MAP] Erreur bounds:', error);
+      console.error('%c❌ [MapView] Bounds error:', 'color: #ef4444', error);
     }
-  }, [geoData, mapReady, selectedFeatureId, mapLevel]);
-  // ✅ onFeatureClick n'est PLUS dans les dépendances
 
-  // ─── Zoom sur la sélection ────────────────────────────────────────────────
+    const elapsed = (performance.now() - startTime).toFixed(1);
+    console.log(`%c✅ [MapView] GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+  }, [geoData, mapReady, selectedFeatureId, mapLevel]);
+
+  // ── Zoom sur sélection ────────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
+
+    console.log(`%c🔍 [MapView] Zooming to feature ID: ${selectedFeatureId}`, 'color: #06b6d4; font-weight: bold');
 
     geoJsonLayerRef.current.eachLayer((layer: any) => {
       const feature = layer.feature;
@@ -1264,18 +1960,17 @@ export default function MapView({
         if (bounds.isValid()) {
           mapRef.current!.fitBounds(bounds, {
             padding: [100, 100],
-            maxZoom: 10,
+            maxZoom: 12,
             animate: true,
-            duration: 0.4,
+            duration: 0.6,
           });
         }
       }
     });
   }, [selectedFeatureId]);
 
-  // ─── Rendu ────────────────────────────────────────────────────────────────
   if (loading) {
-    return <SkeletonMap />;
+    return <MapSkeleton />;
   }
 
   return (
@@ -1301,42 +1996,98 @@ export default function MapView({
       <style jsx global>{`
         .leaflet-container {
           font-family: inherit;
+          background: #f3f4f6;
         }
+        
+        .dark .leaflet-container {
+          background: #111827;
+        }
+        
         .map-tooltip {
-          background: rgba(255, 255, 255, 0.95) !important;
+          background: rgba(255, 255, 255, 0.98) !important;
           border: 2px solid #22c55e !important;
-          border-radius: 8px !important;
-          padding: 6px 10px !important;
+          border-radius: 10px !important;
+          padding: 8px 12px !important;
           font-weight: 600 !important;
           font-size: 13px !important;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
-          backdrop-filter: blur(4px) !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+          backdrop-filter: blur(8px) !important;
           pointer-events: none !important;
+          line-height: 1.4 !important;
         }
+        
         .dark .map-tooltip {
-          background: rgba(31, 41, 55, 0.95) !important;
+          background: rgba(31, 41, 55, 0.98) !important;
           border-color: #16a34a !important;
           color: white !important;
         }
+        
         .leaflet-control-attribution {
-          font-size: 10px !important;
-          background: rgba(255, 255, 255, 0.7) !important;
-          padding: 2px 5px !important;
+          font-size: 9px !important;
+          background: rgba(255, 255, 255, 0.8) !important;
+          padding: 2px 6px !important;
+          border-radius: 4px !important;
         }
+        
         .dark .leaflet-control-attribution {
-          background: rgba(0, 0, 0, 0.5) !important;
-          color: rgba(255, 255, 255, 0.7) !important;
+          background: rgba(0, 0, 0, 0.6) !important;
+          color: rgba(255, 255, 255, 0.8) !important;
         }
+        
+        .leaflet-control-attribution a {
+          color: #22c55e !important;
+          text-decoration: none !important;
+        }
+        
+        .dark .leaflet-control-attribution a {
+          color: #86efac !important;
+        }
+        
+        /* Performance optimizations */
         .leaflet-tile {
           will-change: opacity;
         }
+        
         .leaflet-zoom-anim .leaflet-zoom-animated {
           will-change: transform;
+        }
+        
+        /* Zoom control styling */
+        .leaflet-control-zoom {
+          border: none !important;
+          border-radius: 8px !important;
+          overflow: hidden !important;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+        }
+        
+        .leaflet-control-zoom a {
+          width: 36px !important;
+          height: 36px !important;
+          line-height: 36px !important;
+          font-size: 18px !important;
+          background: white !important;
+          color: #374151 !important;
+          border: none !important;
+        }
+        
+        .dark .leaflet-control-zoom a {
+          background: #1f2937 !important;
+          color: #e5e7eb !important;
+        }
+        
+        .leaflet-control-zoom a:hover {
+          background: #f3f4f6 !important;
+          color: #22c55e !important;
+        }
+        
+        .dark .leaflet-control-zoom a:hover {
+          background: #374151 !important;
+          color: #86efac !important;
         }
       `}</style>
     </div>
   );
-}
+});
 
 
 ================================================================================
@@ -1835,23 +2586,27 @@ import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
+const MAPTILER_API_KEY = "Lr72DkH8TYyjpP7RNZS9";
+
 interface DetailMapProps {
-  geoData  : any;   // GeoJSONFeatureCollection
-  targetId : number;
+  geoData: any;
+  targetId: number;
 }
 
 export default function DetailMap({ geoData, targetId }: DetailMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef       = useRef<L.Map | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || !geoData) return;
 
-    // Destroy previous instance if any (strict-mode double-mount)
+    // Destroy previous instance
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
     }
+
+    console.log('%c🗺️  [DetailMap] Initializing detail map with MapTiler', 'color: #22c55e; font-weight: bold');
 
     const map = L.map(containerRef.current, {
       center: [7.3697, 12.3547],
@@ -1859,13 +2614,28 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
       zoomControl: true,
       preferCanvas: true,
       fadeAnimation: true,
+      attributionControl: false,
     });
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
-      maxZoom: 18,
-      minZoom: 4,
-    }).addTo(map);
+    // Attribution
+    L.control.attribution({
+      position: 'bottomright',
+      prefix: false,
+    }).addAttribution(
+      '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a>'
+    ).addTo(map);
+
+    // MapTiler Satellite Hybrid (Pour les détails)
+    L.tileLayer(
+      `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`,
+      {
+        tileSize: 512,
+        zoomOffset: -1,
+        minZoom: 1,
+        maxZoom: 20,
+        crossOrigin: true,
+      }
+    ).addTo(map);
 
     let targetBounds: L.LatLngBounds | null = null;
 
@@ -1873,11 +2643,11 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
       style: (feature: any) => {
         const isTarget = feature?.properties?.id === targetId;
         return {
-          fillColor  : isTarget ? '#22c55e' : '#d1fae5',
-          weight     : isTarget ? 3.5 : 1,
-          opacity    : 1,
-          color      : isTarget ? '#15803d' : '#86efac',
-          fillOpacity: isTarget ? 0.65 : 0.25,
+          fillColor: isTarget ? '#22c55e' : '#d1fae5',
+          weight: isTarget ? 4 : 1.5,
+          opacity: 1,
+          color: isTarget ? '#15803d' : '#86efac',
+          fillOpacity: isTarget ? 0.75 : 0.3,
         };
       },
       onEachFeature: (feature, layer) => {
@@ -1886,7 +2656,7 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
           layer.bindTooltip(name, {
             permanent: feature.properties?.id === targetId,
             direction: 'center',
-            className: 'map-tooltip',
+            className: 'detail-map-tooltip',
           });
         }
         if (feature.properties?.id === targetId) {
@@ -1899,7 +2669,12 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
 
     // Zoom into target
     if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
-      map.fitBounds(targetBounds as L.LatLngBounds, { padding: [30, 30], maxZoom: 12, animate: true, duration: 0.8 });
+      map.fitBounds(targetBounds as L.LatLngBounds, {
+        padding: [40, 40],
+        maxZoom: 13,
+        animate: true,
+        duration: 0.8,
+      });
     }
 
     mapRef.current = map;
@@ -1910,7 +2685,23 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
     };
   }, [geoData, targetId]);
 
-  return <div ref={containerRef} className="w-full h-full" />;
+  return (
+    <>
+      <div ref={containerRef} className="w-full h-full" />
+      <style jsx global>{`
+        .detail-map-tooltip {
+          background: rgba(34, 197, 94, 0.95) !important;
+          border: 2px solid #15803d !important;
+          border-radius: 8px !important;
+          padding: 8px 12px !important;
+          font-weight: 700 !important;
+          font-size: 14px !important;
+          color: white !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+        }
+      `}</style>
+    </>
+  );
 }
 
 

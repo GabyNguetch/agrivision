@@ -130,12 +130,14 @@ export default function HomePage() {
                 <ArrowRight className="w-6 h-6" />
               </Link>
               
-              <button className="px-8 py-4 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-white font-bold rounded-xl border-2 border-gray-200 dark:border-gray-700 transition-all transform hover:scale-105 shadow-lg text-lg"
+              <Link
+                href="/stats"
+                className="px-8 py-4 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-white font-bold rounded-xl border-2 border-gray-200 dark:border-gray-700 transition-all transform hover:scale-105 shadow-lg text-lg"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem' }}
               >
                 <BarChart3 className="w-6 h-6" />
                 Voir les statistiques
-              </button>
+              </Link>
             </div>
           </div>
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { ArrowLeft, Leaf, BarChart3 } from 'lucide-react';
@@ -13,7 +13,7 @@ import {
   getProductions,
 } from '@/lib/api';
 
-// ✨ Chargement dynamique sans SSR pour performance maximale ✨
+// ✨ Chargement dynamique sans SSR
 const MapView = dynamic(() => import('@/components/MapView'), {
   ssr: false,
   loading: () => (
@@ -21,17 +21,13 @@ const MapView = dynamic(() => import('@/components/MapView'), {
       <div className="text-center">
         <div className="inline-block w-16 h-16 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-gray-600 dark:text-gray-400 text-base font-semibold animate-pulse">
-          Chargement de la carte MapTiler…
-        </p>
-        <p className="text-gray-400 dark:text-gray-500 text-xs mt-2">
-          Initialisation des tuiles haute performance
+          Chargement de la carte…
         </p>
       </div>
     </div>
   ),
 });
 
-// Chargement différé du Sidebar (non visible initialement sur mobile)
 const Sidebar = dynamic(() => import('@/components/Sidebar'), {
   ssr: false,
   loading: () => (
@@ -55,7 +51,13 @@ export default function MapPage() {
     annee: null as number | null,
   });
 
-  // ── Load GeoJSON + Filter (avec cache et optimisation) ────────────────────
+  // Cache pour GeoJSON de base (sans enrichissement)
+  const baseGeoDataCache = useRef<Map<MapLevel, GeoJSONFeatureCollection>>(new Map());
+  
+  // Debounce timer
+  const debounceTimer = useRef<NodeJS.Timeout>();
+
+  // ── Load GeoJSON optimisé avec cache local ──────────────────────────────────
   const loadGeoData = useCallback(async () => {
     const startTime = performance.now();
     console.log(
@@ -67,25 +69,38 @@ export default function MapPage() {
     setLoading(true);
     
     try {
-      let data: GeoJSONFeatureCollection;
+      let baseData: GeoJSONFeatureCollection;
       
-      switch (mapLevel) {
-        case 'regions':
-          data = await getRegionsGeoJSON();
-          break;
-        case 'departements':
-          data = await getDepartementsGeoJSON(filters.filiere_id || undefined);
-          break;
-        case 'communes':
-          data = await getCommunesGeoJSON();
-          break;
-        default:
-          data = await getRegionsGeoJSON();
+      // Vérifier le cache local d'abord
+      const cached = baseGeoDataCache.current.get(mapLevel);
+      if (cached && !filters.produit_id && !filters.filiere_id && !filters.annee) {
+        console.log('%c⚡ Using cached base GeoJSON', 'color: #10b981; font-weight: bold');
+        baseData = cached;
+      } else {
+        // Charger depuis l'API (avec cache HTTP)
+        switch (mapLevel) {
+          case 'regions':
+            baseData = await getRegionsGeoJSON();
+            break;
+          case 'departements':
+            baseData = await getDepartementsGeoJSON(filters.filiere_id || undefined);
+            break;
+          case 'communes':
+            baseData = await getCommunesGeoJSON();
+            break;
+          default:
+            baseData = await getRegionsGeoJSON();
+        }
+        
+        // Mettre en cache si pas de filtres
+        if (!filters.produit_id && !filters.filiere_id && !filters.annee) {
+          baseGeoDataCache.current.set(mapLevel, baseData);
+        }
       }
 
-      // Enrichir avec les productions si filtrées
+      // Enrichir avec les productions seulement si nécessaire
       if (filters.produit_id || filters.filiere_id || filters.annee) {
-        console.log('%c📊 [MapPage] Enriching GeoJSON with production data...', 'color: #8b5cf6; font-weight: bold');
+        console.log('%c📊 Enriching with production data...', 'color: #8b5cf6; font-weight: bold');
         
         const productionsData = await getProductions({
           filiere_id: filters.filiere_id,
@@ -97,55 +112,81 @@ export default function MapPage() {
 
         const productions = productionsData.items || [];
 
-        // Grouper par zone
-        const productionsByZone = productions.reduce((acc: any, prod: any) => {
+        // Grouper par zone de manière optimisée
+        const productionsByZone = new Map<number, {total: number; count: number}>();
+        
+        for (const prod of productions) {
           let zoneId: number | null = null;
           
           if (mapLevel === 'regions') zoneId = prod.region_id;
           else if (mapLevel === 'departements') zoneId = prod.departement_id;
           else if (mapLevel === 'communes') zoneId = prod.commune_id;
 
-          if (!zoneId) return acc;
+          if (!zoneId) continue;
 
-          if (!acc[zoneId]) {
-            acc[zoneId] = { total: 0, count: 0 };
-          }
-          acc[zoneId].total += prod.quantite || 0;
-          acc[zoneId].count += 1;
-          return acc;
-        }, {});
+          const existing = productionsByZone.get(zoneId) || { total: 0, count: 0 };
+          existing.total += prod.quantite || 0;
+          existing.count += 1;
+          productionsByZone.set(zoneId, existing);
+        }
 
-        // Enrichir features
-        data.features = data.features.map(feature => ({
-          ...feature,
-          properties: {
-            ...feature.properties,
-            production_total: productionsByZone[feature.properties.id]?.total || 0,
-            production_count: productionsByZone[feature.properties.id]?.count || 0,
-          },
-        }));
+        // Enrichir features de manière optimisée
+        baseData = {
+          ...baseData,
+          features: baseData.features.map(feature => {
+            const prodData = productionsByZone.get(feature.properties.id);
+            return {
+              ...feature,
+              properties: {
+                ...feature.properties,
+                production_total: prodData?.total || 0,
+                production_count: prodData?.count || 0,
+              },
+            };
+          }),
+        };
 
-        console.log(`%c✅ [MapPage] Enriched ${data.features.length} features with production data`, 'color: #22c55e; font-weight: bold');
+        console.log(`%c✅ Enriched ${baseData.features.length} features`, 'color: #22c55e; font-weight: bold');
       }
 
-      setGeoData(data);
+      setGeoData(baseData);
       
       const elapsed = (performance.now() - startTime).toFixed(1);
-      console.log(`%c✅ [MapPage] GeoJSON loaded in ${elapsed}ms — ${data.features.length} features`, 'color: #22c55e; font-weight: bold');
+      console.log(`%c✅ GeoJSON ready in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('%c❌ [MapPage] GeoJSON load failed:', 'color: #ef4444; font-weight: bold', e);
+      console.error('%c❌ GeoJSON load failed:', 'color: #ef4444; font-weight: bold', e);
     } finally {
       setLoading(false);
     }
   }, [mapLevel, filters]);
 
+  // Debounced load
   useEffect(() => {
-    loadGeoData();
-  }, [loadGeoData]);
+    // Clear existing timer
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    // Si changement de niveau, charger immédiatement
+    if (!filters.produit_id && !filters.filiere_id && !filters.annee) {
+      loadGeoData();
+    } else {
+      // Sinon, debounce de 300ms pour les filtres
+      debounceTimer.current = setTimeout(() => {
+        loadGeoData();
+      }, 300);
+    }
+
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, [mapLevel, filters, loadGeoData]);
 
   // ── Feature click ─────────────────────────────────────────────────────────
   const handleFeatureClick = useCallback(async (properties: any) => {
-    console.log(`%c🖱️  [MapPage] Feature clicked:`, 'color: #8b5cf6; font-weight: bold', properties);
+    console.log(`%c🖱️  Feature clicked:`, 'color: #8b5cf6; font-weight: bold', properties);
     setSelectedFeatureId(properties.id);
     
     try {
@@ -184,24 +225,27 @@ export default function MapPage() {
       }
       
       setSelectedEntity(entityData);
-      console.log('%c✅ [MapPage] Entity data loaded', 'color: #22c55e; font-weight: bold');
+      console.log('%c✅ Entity loaded', 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('%c❌ [MapPage] Detail fetch failed:', 'color: #ef4444; font-weight: bold', e);
+      console.error('%c❌ Detail fetch failed:', 'color: #ef4444; font-weight: bold', e);
       setSelectedEntity(properties);
     }
   }, [mapLevel, filters]);
 
   const handleFilterChange = useCallback((nf: any) => {
-    console.log('%c🔄 [MapPage] Filters changed:', 'color: #f59e0b; font-weight: bold', nf);
+    console.log('%c🔄 Filters changing:', 'color: #f59e0b; font-weight: bold', nf);
     setFilters(nf);
   }, []);
 
   const handleMapLevelChange = useCallback((level: MapLevel) => {
-    console.log(`%c🗺️  [MapPage] Map level changed to: ${level}`, 'color: #3b82f6; font-weight: bold');
+    console.log(`%c🗺️  Map level changing to: ${level}`, 'color: #3b82f6; font-weight: bold');
     setMapLevel(level);
     setSelectedEntity(null);
     setSelectedFeatureId(null);
   }, []);
+
+  // Mémoriser le nombre de zones
+  const zoneCount = useMemo(() => geoData?.features.length || 0, [geoData]);
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-950">
@@ -237,7 +281,7 @@ export default function MapPage() {
             </Link>
             <div className="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg border border-green-200 dark:border-green-800">
               <span className="text-xs font-semibold">
-                {geoData ? `${geoData.features.length} zones` : '…'}
+                {loading ? '…' : `${zoneCount} zones`}
               </span>
             </div>
             <ThemeToggle />

@@ -15,17 +15,15 @@ interface MapViewProps {
   selectedFeatureId?: number | null;
 }
 
-// Skeleton intégré pour éviter une dépendance externe
 const MapSkeleton = () => (
   <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center rounded-xl">
     <div className="text-center">
       <div className="inline-block w-14 h-14 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-3" />
-      <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement de la carte…</p>
+      <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement…</p>
     </div>
   </div>
 );
 
-// Memoize le composant pour éviter les re-renders inutiles
 export default memo(function MapView({
   geoData,
   loading,
@@ -38,16 +36,18 @@ export default memo(function MapView({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
   const onFeatureClickRef = useRef(onFeatureClick);
+  const currentGeoDataRef = useRef<GeoJSONFeatureCollection | null>(null);
+  const layersByIdRef = useRef<Map<number, L.Layer>>(new Map());
 
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick;
   }, [onFeatureClick]);
 
-  // ── Initialisation carte (une seule fois) avec MapTiler ──────────────────
+  // ── Initialisation carte (une seule fois) ────────────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    console.log('%c🗺️  [MapView] Initializing MapTiler map...', 'color: #22c55e; font-weight: bold');
+    console.log('%c🗺️  [MapView] Initializing map...', 'color: #22c55e; font-weight: bold');
     
     try {
       const map = L.map(mapContainerRef.current, {
@@ -61,10 +61,8 @@ export default memo(function MapView({
         attributionControl: false,
       });
 
-      // Contrôle de zoom
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Attribution personnalisée
       L.control.attribution({
         position: 'bottomright',
         prefix: false,
@@ -73,7 +71,7 @@ export default memo(function MapView({
         '<a href="https://www.openstreetmap.org/copyright" target="_blank">© OpenStreetMap</a>'
       ).addTo(map);
 
-      // ✨ MapTiler Streets (Haute Performance) ✨
+      // MapTiler Streets
       L.tileLayer(
         `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MAPTILER_API_KEY}`,
         {
@@ -90,14 +88,14 @@ export default memo(function MapView({
 
       mapRef.current = map;
       setMapReady(true);
-      console.log('%c✅ [MapView] MapTiler initialized successfully', 'color: #22c55e; font-weight: bold');
+      console.log('%c✅ Map initialized', 'color: #22c55e; font-weight: bold');
     } catch (error) {
-      console.error('%c❌ [MapView] Map initialization failed:', 'color: #ef4444; font-weight: bold', error);
+      console.error('%c❌ Map init failed:', 'color: #ef4444; font-weight: bold', error);
     }
 
     return () => {
       if (mapRef.current) {
-        console.log('%c🗑️  [MapView] Cleaning up map instance', 'color: #f59e0b');
+        console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
         mapRef.current.remove();
         mapRef.current = null;
         setMapReady(false);
@@ -105,56 +103,88 @@ export default memo(function MapView({
     };
   }, []);
 
-  // ── Mise à jour GeoJSON (Ultra-optimisé) ──────────────────────────────────
+  // ── Mise à jour GeoJSON OPTIMISÉE (incrémentale si possible) ──────────────
   useEffect(() => {
     if (!mapRef.current || !mapReady || !geoData) return;
 
     const startTime = performance.now();
-    console.log(`%c🔄 [MapView] Updating GeoJSON layer - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
+    
+    // Vérifier si on peut faire une mise à jour incrémentale
+    const canIncrementalUpdate = 
+      currentGeoDataRef.current &&
+      currentGeoDataRef.current.features.length === geoData.features.length &&
+      geoJsonLayerRef.current;
 
-    // Supprimer l'ancienne couche
+    if (canIncrementalUpdate) {
+      console.log('%c⚡ Incremental style update', 'color: #10b981; font-weight: bold');
+      
+      // Mise à jour incrémentale des styles uniquement
+      geoData.features.forEach((feature) => {
+        const id = feature.properties?.id;
+        if (!id) return;
+        
+        const layer = layersByIdRef.current.get(id);
+        if (layer && layer instanceof L.Path) {
+          const isSelected = id === selectedFeatureId;
+          const baseColor = getFeatureColor(feature);
+          
+          layer.setStyle({
+            fillColor: isSelected ? '#22c55e' : baseColor,
+            weight: isSelected ? 3 : 1.5,
+            opacity: 1,
+            color: isSelected ? '#15803d' : '#16a34a',
+            fillOpacity: isSelected ? 0.85 : 0.65,
+          });
+        }
+      });
+      
+      currentGeoDataRef.current = geoData;
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`%c✅ Styles updated in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+      return;
+    }
+
+    // Sinon, re-créer la couche complète
+    console.log(`%c🔄 Full GeoJSON update - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
+
     if (geoJsonLayerRef.current) {
       mapRef.current.removeLayer(geoJsonLayerRef.current);
       geoJsonLayerRef.current = null;
     }
-
-    // Palette de couleurs par filière
-    const filiereColors: Record<string, string> = {
-      'agriculture': '#22c55e',
-      'élevage': '#f59e0b',
-      'pêche': '#3b82f6',
-      'foresterie': '#10b981',
-      'default': '#86efac'
-    };
-
-    const getStyle = (feature: any) => {
-      const isSelected = feature?.properties?.id === selectedFeatureId;
-      const filiere = feature?.properties?.filiere_principale?.toLowerCase() || 'default';
-      const baseColor = filiereColors[filiere] || filiereColors.default;
-
-      return {
-        fillColor: isSelected ? '#22c55e' : baseColor,
-        weight: isSelected ? 3 : 1.5,
-        opacity: 1,
-        color: isSelected ? '#15803d' : '#16a34a',
-        fillOpacity: isSelected ? 0.85 : 0.65,
-      };
-    };
+    
+    layersByIdRef.current.clear();
 
     const geoJsonLayer = L.geoJSON(geoData, {
-      style: getStyle,
+      style: (feature) => {
+        const isSelected = feature?.properties?.id === selectedFeatureId;
+        const baseColor = getFeatureColor(feature);
+
+        return {
+          fillColor: isSelected ? '#22c55e' : baseColor,
+          weight: isSelected ? 3 : 1.5,
+          opacity: 1,
+          color: isSelected ? '#15803d' : '#16a34a',
+          fillOpacity: isSelected ? 0.85 : 0.65,
+        };
+      },
       onEachFeature: (feature, layer) => {
         const props = feature.properties;
         if (!props) return;
 
+        // Sauvegarder la référence au layer
+        if (props.id) {
+          layersByIdRef.current.set(props.id, layer);
+        }
+
         const name = props.nom || props.name || 'Sans nom';
 
-        // Tooltip enrichi
+        // Tooltip
         const tooltipContent = `
           <div class="font-semibold text-base">${name}</div>
           ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
           ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
           ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
+          ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
         `;
 
         layer.bindTooltip(tooltipContent, {
@@ -166,28 +196,34 @@ export default memo(function MapView({
 
         // Click handler
         layer.on('click', () => {
-          console.log('%c🖱️  [MapView] Feature clicked:', 'color: #8b5cf6', props);
+          console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
           if (onFeatureClickRef.current) {
             onFeatureClickRef.current(props);
           }
         });
 
         // Hover effects
-        layer.on('mouseover', function (this: L.GeoJSON) {
-          this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+        layer.on('mouseover', function (this: any) {
+          if (this.setStyle) {
+            this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+          }
         });
-        layer.on('mouseout', function (this: L.GeoJSON) {
-          const isSelected = props.id === selectedFeatureId;
-          this.setStyle({
-            fillOpacity: isSelected ? 0.85 : 0.65,
-            weight: isSelected ? 3 : 1.5,
-          });
+        
+        layer.on('mouseout', function (this: any) {
+          if (this.setStyle) {
+            const isSelected = props.id === selectedFeatureId;
+            this.setStyle({
+              fillOpacity: isSelected ? 0.85 : 0.65,
+              weight: isSelected ? 3 : 1.5,
+            });
+          }
         });
       },
     });
 
     geoJsonLayer.addTo(mapRef.current);
     geoJsonLayerRef.current = geoJsonLayer;
+    currentGeoDataRef.current = geoData;
 
     // Ajuster la vue
     try {
@@ -200,33 +236,33 @@ export default memo(function MapView({
         });
       }
     } catch (error) {
-      console.error('%c❌ [MapView] Bounds error:', 'color: #ef4444', error);
+      console.error('%c❌ Bounds error:', 'color: #ef4444', error);
     }
 
     const elapsed = (performance.now() - startTime).toFixed(1);
-    console.log(`%c✅ [MapView] GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+    console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
   }, [geoData, mapReady, selectedFeatureId, mapLevel]);
 
   // ── Zoom sur sélection ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
+    if (!mapRef.current || !selectedFeatureId) return;
 
-    console.log(`%c🔍 [MapView] Zooming to feature ID: ${selectedFeatureId}`, 'color: #06b6d4; font-weight: bold');
-
-    geoJsonLayerRef.current.eachLayer((layer: any) => {
-      const feature = layer.feature;
-      if (feature?.properties?.id === selectedFeatureId) {
-        const bounds = layer.getBounds();
-        if (bounds.isValid()) {
-          mapRef.current!.fitBounds(bounds, {
+    const layer = layersByIdRef.current.get(selectedFeatureId);
+    if (layer && 'getBounds' in layer) {
+      try {
+        const bounds = (layer as any).getBounds();
+        if (bounds && bounds.isValid()) {
+          mapRef.current.fitBounds(bounds, {
             padding: [100, 100],
             maxZoom: 12,
             animate: true,
             duration: 0.6,
           });
         }
+      } catch (e) {
+        console.error('Zoom error:', e);
       }
-    });
+    }
   }, [selectedFeatureId]);
 
   if (loading) {
@@ -303,7 +339,6 @@ export default memo(function MapView({
           color: #86efac !important;
         }
         
-        /* Performance optimizations */
         .leaflet-tile {
           will-change: opacity;
         }
@@ -312,7 +347,6 @@ export default memo(function MapView({
           will-change: transform;
         }
         
-        /* Zoom control styling */
         .leaflet-control-zoom {
           border: none !important;
           border-radius: 8px !important;
@@ -348,3 +382,30 @@ export default memo(function MapView({
     </div>
   );
 });
+
+// Helper: Déterminer la couleur d'une feature
+function getFeatureColor(feature: any): string {
+  const filiereColors: Record<string, string> = {
+    'agriculture': '#22c55e',
+    'élevage': '#f59e0b',
+    'pêche': '#3b82f6',
+    'foresterie': '#10b981',
+  };
+
+  const filiere = feature?.properties?.filiere_principale?.toLowerCase();
+  if (filiere && filiereColors[filiere]) {
+    return filiereColors[filiere];
+  }
+
+  // Couleur basée sur la production
+  const prodTotal = feature?.properties?.production_total;
+  if (prodTotal && prodTotal > 0) {
+    // Gradient vert en fonction de la production
+    if (prodTotal > 10000) return '#15803d';
+    if (prodTotal > 5000) return '#16a34a';
+    if (prodTotal > 1000) return '#22c55e';
+    return '#4ade80';
+  }
+
+  return '#86efac'; // Couleur par défaut
+}
