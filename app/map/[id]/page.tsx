@@ -53,7 +53,7 @@ export default function DetailPage({ params }: { params: { id: string } }) {
       setError(null);
 
       try {
-        let ent: any, prods: any[], kids: any[], infras: any[], geo: any;
+        let ent: any, prods: any, kids: any, infras: any, geo: any;
         let fils: any, cats: any, prts: any;
 
         // Charger les données de base

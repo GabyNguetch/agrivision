@@ -403,7 +403,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\app\map\page.tsx
 
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { ArrowLeft, Leaf, BarChart3 } from 'lucide-react';
@@ -416,7 +416,7 @@ import {
   getProductions,
 } from '@/lib/api';
 
-// ✨ Chargement dynamique sans SSR pour performance maximale ✨
+// ✨ Chargement dynamique sans SSR
 const MapView = dynamic(() => import('@/components/MapView'), {
   ssr: false,
   loading: () => (
@@ -424,17 +424,13 @@ const MapView = dynamic(() => import('@/components/MapView'), {
       <div className="text-center">
         <div className="inline-block w-16 h-16 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-gray-600 dark:text-gray-400 text-base font-semibold animate-pulse">
-          Chargement de la carte MapTiler…
-        </p>
-        <p className="text-gray-400 dark:text-gray-500 text-xs mt-2">
-          Initialisation des tuiles haute performance
+          Chargement de la carte…
         </p>
       </div>
     </div>
   ),
 });
 
-// Chargement différé du Sidebar (non visible initialement sur mobile)
 const Sidebar = dynamic(() => import('@/components/Sidebar'), {
   ssr: false,
   loading: () => (
@@ -458,7 +454,13 @@ export default function MapPage() {
     annee: null as number | null,
   });
 
-  // ── Load GeoJSON + Filter (avec cache et optimisation) ────────────────────
+  // Cache pour GeoJSON de base (sans enrichissement)
+  const baseGeoDataCache = useRef<Map<MapLevel, GeoJSONFeatureCollection>>(new Map());
+  
+  // Debounce timer
+  const debounceTimer = useRef<NodeJS.Timeout>();
+
+  // ── Load GeoJSON optimisé avec cache local ──────────────────────────────────
   const loadGeoData = useCallback(async () => {
     const startTime = performance.now();
     console.log(
@@ -470,25 +472,38 @@ export default function MapPage() {
     setLoading(true);
     
     try {
-      let data: GeoJSONFeatureCollection;
+      let baseData: GeoJSONFeatureCollection;
       
-      switch (mapLevel) {
-        case 'regions':
-          data = await getRegionsGeoJSON();
-          break;
-        case 'departements':
-          data = await getDepartementsGeoJSON(filters.filiere_id || undefined);
-          break;
-        case 'communes':
-          data = await getCommunesGeoJSON();
-          break;
-        default:
-          data = await getRegionsGeoJSON();
+      // Vérifier le cache local d'abord
+      const cached = baseGeoDataCache.current.get(mapLevel);
+      if (cached && !filters.produit_id && !filters.filiere_id && !filters.annee) {
+        console.log('%c⚡ Using cached base GeoJSON', 'color: #10b981; font-weight: bold');
+        baseData = cached;
+      } else {
+        // Charger depuis l'API (avec cache HTTP)
+        switch (mapLevel) {
+          case 'regions':
+            baseData = await getRegionsGeoJSON();
+            break;
+          case 'departements':
+            baseData = await getDepartementsGeoJSON(filters.filiere_id || undefined);
+            break;
+          case 'communes':
+            baseData = await getCommunesGeoJSON();
+            break;
+          default:
+            baseData = await getRegionsGeoJSON();
+        }
+        
+        // Mettre en cache si pas de filtres
+        if (!filters.produit_id && !filters.filiere_id && !filters.annee) {
+          baseGeoDataCache.current.set(mapLevel, baseData);
+        }
       }
 
-      // Enrichir avec les productions si filtrées
+      // Enrichir avec les productions seulement si nécessaire
       if (filters.produit_id || filters.filiere_id || filters.annee) {
-        console.log('%c📊 [MapPage] Enriching GeoJSON with production data...', 'color: #8b5cf6; font-weight: bold');
+        console.log('%c📊 Enriching with production data...', 'color: #8b5cf6; font-weight: bold');
         
         const productionsData = await getProductions({
           filiere_id: filters.filiere_id,
@@ -500,55 +515,81 @@ export default function MapPage() {
 
         const productions = productionsData.items || [];
 
-        // Grouper par zone
-        const productionsByZone = productions.reduce((acc: any, prod: any) => {
+        // Grouper par zone de manière optimisée
+        const productionsByZone = new Map<number, {total: number; count: number}>();
+        
+        for (const prod of productions) {
           let zoneId: number | null = null;
           
           if (mapLevel === 'regions') zoneId = prod.region_id;
           else if (mapLevel === 'departements') zoneId = prod.departement_id;
           else if (mapLevel === 'communes') zoneId = prod.commune_id;
 
-          if (!zoneId) return acc;
+          if (!zoneId) continue;
 
-          if (!acc[zoneId]) {
-            acc[zoneId] = { total: 0, count: 0 };
-          }
-          acc[zoneId].total += prod.quantite || 0;
-          acc[zoneId].count += 1;
-          return acc;
-        }, {});
+          const existing = productionsByZone.get(zoneId) || { total: 0, count: 0 };
+          existing.total += prod.quantite || 0;
+          existing.count += 1;
+          productionsByZone.set(zoneId, existing);
+        }
 
-        // Enrichir features
-        data.features = data.features.map(feature => ({
-          ...feature,
-          properties: {
-            ...feature.properties,
-            production_total: productionsByZone[feature.properties.id]?.total || 0,
-            production_count: productionsByZone[feature.properties.id]?.count || 0,
-          },
-        }));
+        // Enrichir features de manière optimisée
+        baseData = {
+          ...baseData,
+          features: baseData.features.map(feature => {
+            const prodData = productionsByZone.get(feature.properties.id);
+            return {
+              ...feature,
+              properties: {
+                ...feature.properties,
+                production_total: prodData?.total || 0,
+                production_count: prodData?.count || 0,
+              },
+            };
+          }),
+        };
 
-        console.log(`%c✅ [MapPage] Enriched ${data.features.length} features with production data`, 'color: #22c55e; font-weight: bold');
+        console.log(`%c✅ Enriched ${baseData.features.length} features`, 'color: #22c55e; font-weight: bold');
       }
 
-      setGeoData(data);
+      setGeoData(baseData);
       
       const elapsed = (performance.now() - startTime).toFixed(1);
-      console.log(`%c✅ [MapPage] GeoJSON loaded in ${elapsed}ms — ${data.features.length} features`, 'color: #22c55e; font-weight: bold');
+      console.log(`%c✅ GeoJSON ready in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('%c❌ [MapPage] GeoJSON load failed:', 'color: #ef4444; font-weight: bold', e);
+      console.error('%c❌ GeoJSON load failed:', 'color: #ef4444; font-weight: bold', e);
     } finally {
       setLoading(false);
     }
   }, [mapLevel, filters]);
 
+  // Debounced load
   useEffect(() => {
-    loadGeoData();
-  }, [loadGeoData]);
+    // Clear existing timer
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    // Si changement de niveau, charger immédiatement
+    if (!filters.produit_id && !filters.filiere_id && !filters.annee) {
+      loadGeoData();
+    } else {
+      // Sinon, debounce de 300ms pour les filtres
+      debounceTimer.current = setTimeout(() => {
+        loadGeoData();
+      }, 300);
+    }
+
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, [mapLevel, filters, loadGeoData]);
 
   // ── Feature click ─────────────────────────────────────────────────────────
   const handleFeatureClick = useCallback(async (properties: any) => {
-    console.log(`%c🖱️  [MapPage] Feature clicked:`, 'color: #8b5cf6; font-weight: bold', properties);
+    console.log(`%c🖱️  Feature clicked:`, 'color: #8b5cf6; font-weight: bold', properties);
     setSelectedFeatureId(properties.id);
     
     try {
@@ -587,24 +628,27 @@ export default function MapPage() {
       }
       
       setSelectedEntity(entityData);
-      console.log('%c✅ [MapPage] Entity data loaded', 'color: #22c55e; font-weight: bold');
+      console.log('%c✅ Entity loaded', 'color: #22c55e; font-weight: bold');
     } catch (e) {
-      console.error('%c❌ [MapPage] Detail fetch failed:', 'color: #ef4444; font-weight: bold', e);
+      console.error('%c❌ Detail fetch failed:', 'color: #ef4444; font-weight: bold', e);
       setSelectedEntity(properties);
     }
   }, [mapLevel, filters]);
 
   const handleFilterChange = useCallback((nf: any) => {
-    console.log('%c🔄 [MapPage] Filters changed:', 'color: #f59e0b; font-weight: bold', nf);
+    console.log('%c🔄 Filters changing:', 'color: #f59e0b; font-weight: bold', nf);
     setFilters(nf);
   }, []);
 
   const handleMapLevelChange = useCallback((level: MapLevel) => {
-    console.log(`%c🗺️  [MapPage] Map level changed to: ${level}`, 'color: #3b82f6; font-weight: bold');
+    console.log(`%c🗺️  Map level changing to: ${level}`, 'color: #3b82f6; font-weight: bold');
     setMapLevel(level);
     setSelectedEntity(null);
     setSelectedFeatureId(null);
   }, []);
+
+  // Mémoriser le nombre de zones
+  const zoneCount = useMemo(() => geoData?.features.length || 0, [geoData]);
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-950">
@@ -640,7 +684,7 @@ export default function MapPage() {
             </Link>
             <div className="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg border border-green-200 dark:border-green-800">
               <span className="text-xs font-semibold">
-                {geoData ? `${geoData.features.length} zones` : '…'}
+                {loading ? '…' : `${zoneCount} zones`}
               </span>
             </div>
             <ThemeToggle />
@@ -1755,17 +1799,15 @@ interface MapViewProps {
   selectedFeatureId?: number | null;
 }
 
-// Skeleton intégré pour éviter une dépendance externe
 const MapSkeleton = () => (
   <div className="w-full h-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center rounded-xl">
     <div className="text-center">
       <div className="inline-block w-14 h-14 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-3" />
-      <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement de la carte…</p>
+      <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Chargement…</p>
     </div>
   </div>
 );
 
-// Memoize le composant pour éviter les re-renders inutiles
 export default memo(function MapView({
   geoData,
   loading,
@@ -1778,16 +1820,18 @@ export default memo(function MapView({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [mapReady, setMapReady] = useState(false);
   const onFeatureClickRef = useRef(onFeatureClick);
+  const currentGeoDataRef = useRef<GeoJSONFeatureCollection | null>(null);
+  const layersByIdRef = useRef<Map<number, L.Layer>>(new Map());
 
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick;
   }, [onFeatureClick]);
 
-  // ── Initialisation carte (une seule fois) avec MapTiler ──────────────────
+  // ── Initialisation carte (une seule fois) ────────────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    console.log('%c🗺️  [MapView] Initializing MapTiler map...', 'color: #22c55e; font-weight: bold');
+    console.log('%c🗺️  [MapView] Initializing map...', 'color: #22c55e; font-weight: bold');
     
     try {
       const map = L.map(mapContainerRef.current, {
@@ -1801,10 +1845,8 @@ export default memo(function MapView({
         attributionControl: false,
       });
 
-      // Contrôle de zoom
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // Attribution personnalisée
       L.control.attribution({
         position: 'bottomright',
         prefix: false,
@@ -1813,7 +1855,7 @@ export default memo(function MapView({
         '<a href="https://www.openstreetmap.org/copyright" target="_blank">© OpenStreetMap</a>'
       ).addTo(map);
 
-      // ✨ MapTiler Streets (Haute Performance) ✨
+      // MapTiler Streets
       L.tileLayer(
         `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MAPTILER_API_KEY}`,
         {
@@ -1830,14 +1872,14 @@ export default memo(function MapView({
 
       mapRef.current = map;
       setMapReady(true);
-      console.log('%c✅ [MapView] MapTiler initialized successfully', 'color: #22c55e; font-weight: bold');
+      console.log('%c✅ Map initialized', 'color: #22c55e; font-weight: bold');
     } catch (error) {
-      console.error('%c❌ [MapView] Map initialization failed:', 'color: #ef4444; font-weight: bold', error);
+      console.error('%c❌ Map init failed:', 'color: #ef4444; font-weight: bold', error);
     }
 
     return () => {
       if (mapRef.current) {
-        console.log('%c🗑️  [MapView] Cleaning up map instance', 'color: #f59e0b');
+        console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
         mapRef.current.remove();
         mapRef.current = null;
         setMapReady(false);
@@ -1845,56 +1887,88 @@ export default memo(function MapView({
     };
   }, []);
 
-  // ── Mise à jour GeoJSON (Ultra-optimisé) ──────────────────────────────────
+  // ── Mise à jour GeoJSON OPTIMISÉE (incrémentale si possible) ──────────────
   useEffect(() => {
     if (!mapRef.current || !mapReady || !geoData) return;
 
     const startTime = performance.now();
-    console.log(`%c🔄 [MapView] Updating GeoJSON layer - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
+    
+    // Vérifier si on peut faire une mise à jour incrémentale
+    const canIncrementalUpdate = 
+      currentGeoDataRef.current &&
+      currentGeoDataRef.current.features.length === geoData.features.length &&
+      geoJsonLayerRef.current;
 
-    // Supprimer l'ancienne couche
+    if (canIncrementalUpdate) {
+      console.log('%c⚡ Incremental style update', 'color: #10b981; font-weight: bold');
+      
+      // Mise à jour incrémentale des styles uniquement
+      geoData.features.forEach((feature) => {
+        const id = feature.properties?.id;
+        if (!id) return;
+        
+        const layer = layersByIdRef.current.get(id);
+        if (layer && layer instanceof L.Path) {
+          const isSelected = id === selectedFeatureId;
+          const baseColor = getFeatureColor(feature);
+          
+          layer.setStyle({
+            fillColor: isSelected ? '#22c55e' : baseColor,
+            weight: isSelected ? 3 : 1.5,
+            opacity: 1,
+            color: isSelected ? '#15803d' : '#16a34a',
+            fillOpacity: isSelected ? 0.85 : 0.65,
+          });
+        }
+      });
+      
+      currentGeoDataRef.current = geoData;
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`%c✅ Styles updated in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+      return;
+    }
+
+    // Sinon, re-créer la couche complète
+    console.log(`%c🔄 Full GeoJSON update - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
+
     if (geoJsonLayerRef.current) {
       mapRef.current.removeLayer(geoJsonLayerRef.current);
       geoJsonLayerRef.current = null;
     }
-
-    // Palette de couleurs par filière
-    const filiereColors: Record<string, string> = {
-      'agriculture': '#22c55e',
-      'élevage': '#f59e0b',
-      'pêche': '#3b82f6',
-      'foresterie': '#10b981',
-      'default': '#86efac'
-    };
-
-    const getStyle = (feature: any) => {
-      const isSelected = feature?.properties?.id === selectedFeatureId;
-      const filiere = feature?.properties?.filiere_principale?.toLowerCase() || 'default';
-      const baseColor = filiereColors[filiere] || filiereColors.default;
-
-      return {
-        fillColor: isSelected ? '#22c55e' : baseColor,
-        weight: isSelected ? 3 : 1.5,
-        opacity: 1,
-        color: isSelected ? '#15803d' : '#16a34a',
-        fillOpacity: isSelected ? 0.85 : 0.65,
-      };
-    };
+    
+    layersByIdRef.current.clear();
 
     const geoJsonLayer = L.geoJSON(geoData, {
-      style: getStyle,
+      style: (feature) => {
+        const isSelected = feature?.properties?.id === selectedFeatureId;
+        const baseColor = getFeatureColor(feature);
+
+        return {
+          fillColor: isSelected ? '#22c55e' : baseColor,
+          weight: isSelected ? 3 : 1.5,
+          opacity: 1,
+          color: isSelected ? '#15803d' : '#16a34a',
+          fillOpacity: isSelected ? 0.85 : 0.65,
+        };
+      },
       onEachFeature: (feature, layer) => {
         const props = feature.properties;
         if (!props) return;
 
+        // Sauvegarder la référence au layer
+        if (props.id) {
+          layersByIdRef.current.set(props.id, layer);
+        }
+
         const name = props.nom || props.name || 'Sans nom';
 
-        // Tooltip enrichi
+        // Tooltip
         const tooltipContent = `
           <div class="font-semibold text-base">${name}</div>
           ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
           ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
           ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
+          ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
         `;
 
         layer.bindTooltip(tooltipContent, {
@@ -1906,28 +1980,34 @@ export default memo(function MapView({
 
         // Click handler
         layer.on('click', () => {
-          console.log('%c🖱️  [MapView] Feature clicked:', 'color: #8b5cf6', props);
+          console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
           if (onFeatureClickRef.current) {
             onFeatureClickRef.current(props);
           }
         });
 
         // Hover effects
-        layer.on('mouseover', function (this: L.GeoJSON) {
-          this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+        layer.on('mouseover', function (this: any) {
+          if (this.setStyle) {
+            this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+          }
         });
-        layer.on('mouseout', function (this: L.GeoJSON) {
-          const isSelected = props.id === selectedFeatureId;
-          this.setStyle({
-            fillOpacity: isSelected ? 0.85 : 0.65,
-            weight: isSelected ? 3 : 1.5,
-          });
+        
+        layer.on('mouseout', function (this: any) {
+          if (this.setStyle) {
+            const isSelected = props.id === selectedFeatureId;
+            this.setStyle({
+              fillOpacity: isSelected ? 0.85 : 0.65,
+              weight: isSelected ? 3 : 1.5,
+            });
+          }
         });
       },
     });
 
     geoJsonLayer.addTo(mapRef.current);
     geoJsonLayerRef.current = geoJsonLayer;
+    currentGeoDataRef.current = geoData;
 
     // Ajuster la vue
     try {
@@ -1940,33 +2020,33 @@ export default memo(function MapView({
         });
       }
     } catch (error) {
-      console.error('%c❌ [MapView] Bounds error:', 'color: #ef4444', error);
+      console.error('%c❌ Bounds error:', 'color: #ef4444', error);
     }
 
     const elapsed = (performance.now() - startTime).toFixed(1);
-    console.log(`%c✅ [MapView] GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+    console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
   }, [geoData, mapReady, selectedFeatureId, mapLevel]);
 
   // ── Zoom sur sélection ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapRef.current || !geoJsonLayerRef.current || !selectedFeatureId) return;
+    if (!mapRef.current || !selectedFeatureId) return;
 
-    console.log(`%c🔍 [MapView] Zooming to feature ID: ${selectedFeatureId}`, 'color: #06b6d4; font-weight: bold');
-
-    geoJsonLayerRef.current.eachLayer((layer: any) => {
-      const feature = layer.feature;
-      if (feature?.properties?.id === selectedFeatureId) {
-        const bounds = layer.getBounds();
-        if (bounds.isValid()) {
-          mapRef.current!.fitBounds(bounds, {
+    const layer = layersByIdRef.current.get(selectedFeatureId);
+    if (layer && 'getBounds' in layer) {
+      try {
+        const bounds = (layer as any).getBounds();
+        if (bounds && bounds.isValid()) {
+          mapRef.current.fitBounds(bounds, {
             padding: [100, 100],
             maxZoom: 12,
             animate: true,
             duration: 0.6,
           });
         }
+      } catch (e) {
+        console.error('Zoom error:', e);
       }
-    });
+    }
   }, [selectedFeatureId]);
 
   if (loading) {
@@ -2043,7 +2123,6 @@ export default memo(function MapView({
           color: #86efac !important;
         }
         
-        /* Performance optimizations */
         .leaflet-tile {
           will-change: opacity;
         }
@@ -2052,7 +2131,6 @@ export default memo(function MapView({
           will-change: transform;
         }
         
-        /* Zoom control styling */
         .leaflet-control-zoom {
           border: none !important;
           border-radius: 8px !important;
@@ -2088,6 +2166,33 @@ export default memo(function MapView({
     </div>
   );
 });
+
+// Helper: Déterminer la couleur d'une feature
+function getFeatureColor(feature: any): string {
+  const filiereColors: Record<string, string> = {
+    'agriculture': '#22c55e',
+    'élevage': '#f59e0b',
+    'pêche': '#3b82f6',
+    'foresterie': '#10b981',
+  };
+
+  const filiere = feature?.properties?.filiere_principale?.toLowerCase();
+  if (filiere && filiereColors[filiere]) {
+    return filiereColors[filiere];
+  }
+
+  // Couleur basée sur la production
+  const prodTotal = feature?.properties?.production_total;
+  if (prodTotal && prodTotal > 0) {
+    // Gradient vert en fonction de la production
+    if (prodTotal > 10000) return '#15803d';
+    if (prodTotal > 5000) return '#16a34a';
+    if (prodTotal > 1000) return '#22c55e';
+    return '#4ade80';
+  }
+
+  return '#86efac'; // Couleur par défaut
+}
 
 
 ================================================================================
@@ -2709,7 +2814,7 @@ export default function DetailMap({ geoData, targetId }: DetailMapProps) {
 FICHIER: D:\5GI\Projet-TI\webmap\lib\api.ts
 ================================================================================
 
-// ─── Service API avec cache en mémoire + console logging ────────────────────
+// ─── Service API avec cache optimisé + console logging ──────────────────────
 import type {
   Region, Departement, Commune, Filiere, CategorieProduit, Produit,
   Production, Infrastructure, ApiResponse, GeoJSONFeatureCollection,
@@ -2718,28 +2823,50 @@ import type {
 
 const API_BASE_URL = 'https://apiti.onrender.com';
 
-// ─── Cache (TTL 5 min) ───────────────────────────────────────────────────────
-const CACHE_TTL = 5 * 60 * 1000;
+// ─── Cache amélioré (TTL 10 min pour GeoJSON, 5 min pour le reste) ──────────
+const CACHE_TTL_GEOJSON = 10 * 60 * 1000; // 10 minutes pour GeoJSON
+const CACHE_TTL_DEFAULT = 5 * 60 * 1000;  // 5 minutes pour le reste
+
 interface CacheEntry<T> { data: T; timestamp: number; }
 const cache = new Map<string, CacheEntry<any>>();
 
-function getFromCache<T>(key: string): T | null {
+function getFromCache<T>(key: string, ttl: number = CACHE_TTL_DEFAULT): T | null {
   const e = cache.get(key);
   if (!e) return null;
-  if (Date.now() - e.timestamp > CACHE_TTL) { cache.delete(key); return null; }
+  if (Date.now() - e.timestamp > ttl) { 
+    cache.delete(key); 
+    return null; 
+  }
   return e.data as T;
 }
-function setInCache<T>(key: string, data: T) { cache.set(key, { data, timestamp: Date.now() }); }
 
-// ─── Core fetch + logging ────────────────────────────────────────────────────
-async function fetchAPI<T>(endpoint: string, options?: RequestInit & { useCache?: boolean }): Promise<T> {
-  const url      = `${API_BASE_URL}${endpoint}`;
+function setInCache<T>(key: string, data: T) { 
+  cache.set(key, { data, timestamp: Date.now() }); 
+}
+
+// ─── Nettoyage périodique du cache ───────────────────────────────────────────
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL_GEOJSON) {
+      cache.delete(key);
+    }
+  }
+}, 60000); // Nettoie toutes les minutes
+
+// ─── Core fetch optimisé ─────────────────────────────────────────────────────
+async function fetchAPI<T>(
+  endpoint: string, 
+  options?: RequestInit & { useCache?: boolean; cacheTTL?: number }
+): Promise<T> {
+  const url = `${API_BASE_URL}${endpoint}`;
   const useCache = options?.useCache ?? false;
+  const cacheTTL = options?.cacheTTL ?? CACHE_TTL_DEFAULT;
 
   if (useCache) {
-    const cached = getFromCache<T>(endpoint);
+    const cached = getFromCache<T>(endpoint, cacheTTL);
     if (cached) {
-      console.log('%c[API CACHE HIT] %c' + endpoint, 'color:#10b981;font-weight:700', 'color:#6b7280');
+      console.log('%c[API ⚡ CACHE] %c' + endpoint, 'color:#10b981;font-weight:700', 'color:#6b7280');
       return cached;
     }
   }
@@ -2748,8 +2875,17 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit & { useCache?
   const start = performance.now();
 
   try {
-    const { useCache: _, ...fetchOpts } = options || {};
-    const response = await fetch(url, { ...fetchOpts, headers: { 'Content-Type': 'application/json', ...fetchOpts?.headers } });
+    const { useCache: _, cacheTTL: __, ...fetchOpts } = options || {};
+    const response = await fetch(url, { 
+      ...fetchOpts, 
+      headers: { 
+        'Content-Type': 'application/json', 
+        ...fetchOpts?.headers 
+      },
+      // Ajout de timeout
+      signal: AbortSignal.timeout(15000) // 15 secondes max
+    });
+    
     const elapsed = (performance.now() - start).toFixed(1);
 
     if (!response.ok) {
@@ -2759,23 +2895,37 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit & { useCache?
     }
 
     const data = await response.json();
-    console.log('%c[API ✓] %c' + endpoint + ' %c(' + elapsed + ' ms)', 'color:#22c55e;font-weight:700', 'color:#6b7280', 'color:#9ca3af', data);
+    console.log('%c[API ✓] %c' + endpoint + ' %c(' + elapsed + ' ms)', 'color:#22c55e;font-weight:700', 'color:#6b7280', 'color:#9ca3af');
+    
     if (useCache) setInCache(endpoint, data);
     return data;
   } catch (error) {
-    console.error('%c[API ✕] %c' + endpoint, 'color:#ef4444;font-weight:700', 'color:#6b7280', error);
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      console.error('%c[API ⏱️  TIMEOUT] %c' + endpoint, 'color:#f59e0b;font-weight:700', 'color:#6b7280');
+    } else {
+      console.error('%c[API ✕] %c' + endpoint, 'color:#ef4444;font-weight:700', 'color:#6b7280', error);
+    }
     throw error;
   }
 }
 
 // ─── RÉGIONS ─────────────────────────────────────────────────────────────────
-export const getRegions            = (skip=0, limit=100) => fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`, {useCache:true});
-export const searchRegions         = (q:string, limit=10) => fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-export const getRegion             = (id:number) => fetchAPI<Region>(`/api/v1/regions/${id}`, {useCache:true});
-export const getRegionDepartements = (id:number) => fetchAPI<Departement[]>(`/api/v1/regions/${id}/departements`, {useCache:true});
-export const getRegionProductions  = (id:number, annee?:number, produitId?:number, limit=100) => {
+export const getRegions = (skip=0, limit=100) => 
+  fetchAPI<ApiResponse<Region>>(`/api/v1/regions/?skip=${skip}&limit=${limit}`, {useCache:true});
+
+export const searchRegions = (q:string, limit=10) => 
+  fetchAPI<Region[]>(`/api/v1/regions/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const getRegion = (id:number) => 
+  fetchAPI<Region>(`/api/v1/regions/${id}`, {useCache:true});
+
+export const getRegionDepartements = (id:number) => 
+  fetchAPI<Departement[]>(`/api/v1/regions/${id}/departements`, {useCache:true});
+
+export const getRegionProductions = (id:number, annee?:number, produitId?:number, limit=100) => {
   let u = `/api/v1/regions/${id}/productions?limit=${limit}`;
-  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  if(annee) u+=`&annee=${annee}`; 
+  if(produitId) u+=`&produit_id=${produitId}`;
   return fetchAPI<Production[]>(u);
 };
 
@@ -2785,41 +2935,68 @@ export const getDepartements = (skip=0, limit=100, regionId?:number) => {
   if(regionId) u+=`&region_id=${regionId}`;
   return fetchAPI<ApiResponse<Departement>>(u, {useCache:true});
 };
-export const searchDepartements       = (q:string, limit=10) => fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-export const getDepartement           = (id:number) => fetchAPI<Departement>(`/api/v1/departements/${id}`, {useCache:true});
-export const getDepartementCommunes   = (id:number) => fetchAPI<Commune[]>(`/api/v1/departements/${id}/communes`, {useCache:true});
+
+export const searchDepartements = (q:string, limit=10) => 
+  fetchAPI<Departement[]>(`/api/v1/departements/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const getDepartement = (id:number) => 
+  fetchAPI<Departement>(`/api/v1/departements/${id}`, {useCache:true});
+
+export const getDepartementCommunes = (id:number) => 
+  fetchAPI<Commune[]>(`/api/v1/departements/${id}/communes`, {useCache:true});
+
 export const getDepartementProductions = (id:number, annee?:number, produitId?:number, limit=100) => {
   let u = `/api/v1/departements/${id}/productions?limit=${limit}`;
-  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  if(annee) u+=`&annee=${annee}`; 
+  if(produitId) u+=`&produit_id=${produitId}`;
   return fetchAPI<Production[]>(u);
 };
 
 // ─── COMMUNES ────────────────────────────────────────────────────────────────
 export const getCommunes = (skip=0, limit=100, deptId?:number, type?:string) => {
   let u = `/api/v1/communes/?skip=${skip}&limit=${limit}`;
-  if(deptId) u+=`&departement_id=${deptId}`; if(type) u+=`&type_commune=${type}`;
+  if(deptId) u+=`&departement_id=${deptId}`; 
+  if(type) u+=`&type_commune=${type}`;
   return fetchAPI<ApiResponse<Commune>>(u, {useCache:true});
 };
-export const searchCommunes           = (q:string, limit=10, deptId?:number) => {
+
+export const searchCommunes = (q:string, limit=10, deptId?:number) => {
   let u = `/api/v1/communes/search?q=${encodeURIComponent(q)}&limit=${limit}`;
   if(deptId) u+=`&departement_id=${deptId}`;
   return fetchAPI<Commune[]>(u);
 };
-export const getCommune               = (id:number) => fetchAPI<Commune>(`/api/v1/communes/${id}`, {useCache:true});
-export const getCommuneInfrastructures= (id:number) => fetchAPI<Infrastructure[]>(`/api/v1/communes/${id}/infrastructures`, {useCache:true});
-export const getCommuneProductions    = (id:number, annee?:number, produitId?:number, limit=100) => {
+
+export const getCommune = (id:number) => 
+  fetchAPI<Commune>(`/api/v1/communes/${id}`, {useCache:true});
+
+export const getCommuneInfrastructures = (id:number) => 
+  fetchAPI<Infrastructure[]>(`/api/v1/communes/${id}/infrastructures`, {useCache:true});
+
+export const getCommuneProductions = (id:number, annee?:number, produitId?:number, limit=100) => {
   let u = `/api/v1/communes/${id}/productions?limit=${limit}`;
-  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  if(annee) u+=`&annee=${annee}`; 
+  if(produitId) u+=`&produit_id=${produitId}`;
   return fetchAPI<Production[]>(u);
 };
-export const getCommuneResume         = (id:number) => fetchAPI<any>(`/api/v1/communes/${id}/resume`, {useCache:true});
+
+export const getCommuneResume = (id:number) => 
+  fetchAPI<any>(`/api/v1/communes/${id}/resume`, {useCache:true});
 
 // ─── FILIÈRES ────────────────────────────────────────────────────────────────
-export const getFilieres         = (skip=0, limit=100) => fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`, {useCache:true});
-export const searchFilieres      = (q:string, limit=10) => fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-export const getFiliere          = (id:number) => fetchAPI<Filiere>(`/api/v1/filieres/${id}`, {useCache:true});
-export const getFiliereCategories= (id:number) => fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${id}/categories`, {useCache:true});
-export const getFiliereProduits  = (id:number) => fetchAPI<Produit[]>(`/api/v1/filieres/${id}/produits`, {useCache:true});
+export const getFilieres = (skip=0, limit=100) => 
+  fetchAPI<ApiResponse<Filiere>>(`/api/v1/filieres/?skip=${skip}&limit=${limit}`, {useCache:true});
+
+export const searchFilieres = (q:string, limit=10) => 
+  fetchAPI<Filiere[]>(`/api/v1/filieres/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const getFiliere = (id:number) => 
+  fetchAPI<Filiere>(`/api/v1/filieres/${id}`, {useCache:true});
+
+export const getFiliereCategories = (id:number) => 
+  fetchAPI<CategorieProduit[]>(`/api/v1/filieres/${id}/categories`, {useCache:true});
+
+export const getFiliereProduits = (id:number) => 
+  fetchAPI<Produit[]>(`/api/v1/filieres/${id}/produits`, {useCache:true});
 
 // ─── CATÉGORIES ──────────────────────────────────────────────────────────────
 export const getCategories = (skip=0, limit=100, filiereId?:number) => {
@@ -2827,120 +3004,213 @@ export const getCategories = (skip=0, limit=100, filiereId?:number) => {
   if(filiereId) u+=`&filiere_id=${filiereId}`;
   return fetchAPI<ApiResponse<CategorieProduit>>(u, {useCache:true});
 };
-export const getCategorie        = (id:number) => fetchAPI<CategorieProduit>(`/api/v1/categories/${id}`, {useCache:true});
-export const getCategorieProduits= (id:number) => fetchAPI<Produit[]>(`/api/v1/categories/${id}/produits`, {useCache:true});
+
+export const getCategorie = (id:number) => 
+  fetchAPI<CategorieProduit>(`/api/v1/categories/${id}`, {useCache:true});
+
+export const getCategorieProduits = (id:number) => 
+  fetchAPI<Produit[]>(`/api/v1/categories/${id}/produits`, {useCache:true});
 
 // ─── PRODUITS ────────────────────────────────────────────────────────────────
 export const getProduits = (skip=0, limit=100, catId?:number, filId?:number) => {
   let u = `/api/v1/produits/?skip=${skip}&limit=${limit}`;
-  if(catId) u+=`&categorie_id=${catId}`; if(filId) u+=`&filiere_id=${filId}`;
+  if(catId) u+=`&categorie_id=${catId}`; 
+  if(filId) u+=`&filiere_id=${filId}`;
   return fetchAPI<ApiResponse<Produit>>(u, {useCache:true});
 };
+
 export const searchProduits = (q:string, limit=10, catId?:number, filId?:number) => {
   let u = `/api/v1/produits/search?q=${encodeURIComponent(q)}&limit=${limit}`;
-  if(catId) u+=`&categorie_id=${catId}`; if(filId) u+=`&filiere_id=${filId}`;
+  if(catId) u+=`&categorie_id=${catId}`; 
+  if(filId) u+=`&filiere_id=${filId}`;
   return fetchAPI<Produit[]>(u);
 };
-export const getProduit       = (id:number) => fetchAPI<Produit>(`/api/v1/produits/${id}`, {useCache:true});
+
+export const getProduit = (id:number) => 
+  fetchAPI<Produit>(`/api/v1/produits/${id}`, {useCache:true});
+
 export const getProduitResume = (id:number, annee?:number) => {
-  let u = `/api/v1/produits/${id}/resume`; if(annee) u+=`?annee=${annee}`;
+  let u = `/api/v1/produits/${id}/resume`; 
+  if(annee) u+=`?annee=${annee}`;
   return fetchAPI<any>(u);
 };
 
 // ─── PRODUCTIONS ─────────────────────────────────────────────────────────────
 export const getProductions = (params: Record<string,any>) => {
   const sp = new URLSearchParams();
-  Object.entries(params).forEach(([k,v])=>{ if(v!=null) sp.append(k,String(v)); });
+  Object.entries(params).forEach(([k,v])=> { 
+    if(v!=null) sp.append(k,String(v)); 
+  });
   return fetchAPI<ApiResponse<Production>>(`/api/v1/productions/?${sp}`);
 };
-export const getAnneesDisponibles   = () => fetchAPI<number[]>(`/api/v1/productions/annees`, {useCache:true});
-export const getSaisonsDisponibles  = () => fetchAPI<string[]>(`/api/v1/productions/saisons`, {useCache:true});
-export const getProductionsResume   = (annee?:number) => fetchAPI<any>(`/api/v1/productions/resume${annee?'?annee='+annee:''}`);
+
+export const getAnneesDisponibles = () => 
+  fetchAPI<number[]>(`/api/v1/productions/annees`, {useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getSaisonsDisponibles = () => 
+  fetchAPI<string[]>(`/api/v1/productions/saisons`, {useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getProductionsResume = (annee?:number) => 
+  fetchAPI<any>(`/api/v1/productions/resume${annee?'?annee='+annee:''}`);
+
 export const getProductionsParAnnee = (produitId?:number, regionId?:number, anneeDebut?:number, anneeFin?:number) => {
   const p = new URLSearchParams();
   if(produitId) p.append('produit_id',String(produitId));
-  if(regionId)  p.append('region_id',String(regionId));
-  if(anneeDebut)p.append('annee_debut',String(anneeDebut));
-  if(anneeFin)  p.append('annee_fin',String(anneeFin));
+  if(regionId) p.append('region_id',String(regionId));
+  if(anneeDebut) p.append('annee_debut',String(anneeDebut));
+  if(anneeFin) p.append('annee_fin',String(anneeFin));
   return fetchAPI<any>(`/api/v1/productions/par-annee${p.toString()?'?'+p:''}`);
 };
-export const getProductionsParRegion  = (annee?:number, produitId?:number) => {
-  const p=new URLSearchParams(); if(annee) p.append('annee',String(annee)); if(produitId) p.append('produit_id',String(produitId));
+
+export const getProductionsParRegion = (annee?:number, produitId?:number) => {
+  const p=new URLSearchParams(); 
+  if(annee) p.append('annee',String(annee)); 
+  if(produitId) p.append('produit_id',String(produitId));
   return fetchAPI<any>(`/api/v1/productions/par-region${p.toString()?'?'+p:''}`);
 };
+
 export const getProductionsParProduit = (annee?:number, regionId?:number) => {
-  const p=new URLSearchParams(); if(annee) p.append('annee',String(annee)); if(regionId) p.append('region_id',String(regionId));
+  const p=new URLSearchParams(); 
+  if(annee) p.append('annee',String(annee)); 
+  if(regionId) p.append('region_id',String(regionId));
   return fetchAPI<any>(`/api/v1/productions/par-produit${p.toString()?'?'+p:''}`);
 };
 
 // ─── BASSINS ─────────────────────────────────────────────────────────────────
 export const getBassins = (skip=0,limit=100,filId?:number) => {
-  let u=`/api/v1/bassins/?skip=${skip}&limit=${limit}`; if(filId) u+=`&filiere_id=${filId}`;
+  let u=`/api/v1/bassins/?skip=${skip}&limit=${limit}`; 
+  if(filId) u+=`&filiere_id=${filId}`;
   return fetchAPI<ApiResponse<BassinProduction>>(u,{useCache:true});
 };
-export const searchBassins        = (q:string,limit=10) => fetchAPI<BassinProduction[]>(`/api/v1/bassins/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-export const getBassin            = (id:number) => fetchAPI<BassinProduction>(`/api/v1/bassins/${id}`,{useCache:true});
-export const getBassinGeoJSON     = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/${id}/geojson`,{useCache:true});
-export const getBassinsFilierGeoJSON=(id:number)=> fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/filiere/${id}/geojson`,{useCache:true});
+
+export const searchBassins = (q:string,limit=10) => 
+  fetchAPI<BassinProduction[]>(`/api/v1/bassins/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const getBassin = (id:number) => 
+  fetchAPI<BassinProduction>(`/api/v1/bassins/${id}`,{useCache:true});
+
+export const getBassinGeoJSON = (id:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/${id}/geojson`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getBassinsFilierGeoJSON = (id:number)=> 
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/bassins/filiere/${id}/geojson`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
 
 // ─── ZONES HALIEUTIQUES ──────────────────────────────────────────────────────
 export const getZonesHalieutiques = (skip=0,limit=100,type?:string) => {
-  let u=`/api/v1/zones-halieutiques/?skip=${skip}&limit=${limit}`; if(type) u+=`&type_zone=${type}`;
+  let u=`/api/v1/zones-halieutiques/?skip=${skip}&limit=${limit}`; 
+  if(type) u+=`&type_zone=${type}`;
   return fetchAPI<ApiResponse<ZoneHalieutique>>(u,{useCache:true});
 };
-export const getTypesZones              = () => fetchAPI<string[]>(`/api/v1/zones-halieutiques/types`,{useCache:true});
-export const getZoneHalieutique         = (id:number) => fetchAPI<ZoneHalieutique>(`/api/v1/zones-halieutiques/${id}`,{useCache:true});
-export const getZoneHalieutiqueGeoJSON  = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/zones-halieutiques/${id}/geojson`,{useCache:true});
+
+export const getTypesZones = () => 
+  fetchAPI<string[]>(`/api/v1/zones-halieutiques/types`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getZoneHalieutique = (id:number) => 
+  fetchAPI<ZoneHalieutique>(`/api/v1/zones-halieutiques/${id}`,{useCache:true});
+
+export const getZoneHalieutiqueGeoJSON = (id:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/zones-halieutiques/${id}/geojson`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
 
 // ─── INFRASTRUCTURES ────────────────────────────────────────────────────────
 export const getInfrastructures = (skip=0,limit=100,type?:string,communeId?:number) => {
   let u=`/api/v1/infrastructures/?skip=${skip}&limit=${limit}`;
-  if(type) u+=`&type_infrastructure=${type}`; if(communeId) u+=`&commune_id=${communeId}`;
+  if(type) u+=`&type_infrastructure=${type}`; 
+  if(communeId) u+=`&commune_id=${communeId}`;
   return fetchAPI<ApiResponse<Infrastructure>>(u,{useCache:true});
 };
-export const getTypesInfrastructures  = () => fetchAPI<string[]>(`/api/v1/infrastructures/types`,{useCache:true});
-export const getStatsInfrastructures  = () => fetchAPI<any>(`/api/v1/infrastructures/stats`,{useCache:true});
-export const getInfrastructure        = (id:number) => fetchAPI<Infrastructure>(`/api/v1/infrastructures/${id}`,{useCache:true});
-export const getInfrastructureGeoJSON = (id:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/infrastructures/${id}/geojson`,{useCache:true});
+
+export const getTypesInfrastructures = () => 
+  fetchAPI<string[]>(`/api/v1/infrastructures/types`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getStatsInfrastructures = () => 
+  fetchAPI<any>(`/api/v1/infrastructures/stats`,{useCache:true});
+
+export const getInfrastructure = (id:number) => 
+  fetchAPI<Infrastructure>(`/api/v1/infrastructures/${id}`,{useCache:true});
+
+export const getInfrastructureGeoJSON = (id:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/infrastructures/${id}/geojson`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
 
 // ─── STATISTIQUES ────────────────────────────────────────────────────────────
-export const getStatistiquesGlobales  = () => fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`,{useCache:true});
-export const getStatistiquesProduction= (annee?:number) => fetchAPI<any>(`/api/v1/statistiques/production${annee?'?annee='+annee:''}`);
-export const getEvolutionProduction   = (produitId?:number,regionId?:number,anneeDebut?:number,anneeFin?:number) => {
+export const getStatistiquesGlobales = () => 
+  fetchAPI<StatistiquesGlobales>(`/api/v1/statistiques/globales`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getStatistiquesProduction = (annee?:number) => 
+  fetchAPI<any>(`/api/v1/statistiques/production${annee?'?annee='+annee:''}`);
+
+export const getEvolutionProduction = (produitId?:number,regionId?:number,anneeDebut?:number,anneeFin?:number) => {
   const p=new URLSearchParams();
-  if(produitId) p.append('produit_id',String(produitId)); if(regionId) p.append('region_id',String(regionId));
-  if(anneeDebut) p.append('annee_debut',String(anneeDebut)); if(anneeFin) p.append('annee_fin',String(anneeFin));
+  if(produitId) p.append('produit_id',String(produitId)); 
+  if(regionId) p.append('region_id',String(regionId));
+  if(anneeDebut) p.append('annee_debut',String(anneeDebut)); 
+  if(anneeFin) p.append('annee_fin',String(anneeFin));
   return fetchAPI<any>(`/api/v1/statistiques/evolution${p.toString()?'?'+p:''}`);
 };
+
 export const getTopRegions = (annee?:number,produitId?:number,limit=10) => {
   let u=`/api/v1/statistiques/top-regions?limit=${limit}`;
-  if(annee) u+=`&annee=${annee}`; if(produitId) u+=`&produit_id=${produitId}`;
+  if(annee) u+=`&annee=${annee}`; 
+  if(produitId) u+=`&produit_id=${produitId}`;
   return fetchAPI<any>(u);
 };
+
 export const getTopProduits = (annee?:number,regionId?:number,limit=10) => {
   let u=`/api/v1/statistiques/top-produits?limit=${limit}`;
-  if(annee) u+=`&annee=${annee}`; if(regionId) u+=`&region_id=${regionId}`;
+  if(annee) u+=`&annee=${annee}`; 
+  if(regionId) u+=`&region_id=${regionId}`;
   return fetchAPI<any>(u);
 };
+
 export const comparerAnnees = (ref:number,cmp:number,produitId?:number,regionId?:number) => {
   let u=`/api/v1/statistiques/comparaison/annees?annee_reference=${ref}&annee_comparaison=${cmp}`;
-  if(produitId) u+=`&produit_id=${produitId}`; if(regionId) u+=`&region_id=${regionId}`;
+  if(produitId) u+=`&produit_id=${produitId}`; 
+  if(regionId) u+=`&region_id=${regionId}`;
   return fetchAPI<any>(u);
 };
 
 // ─── SOURCES ─────────────────────────────────────────────────────────────────
-export const getSources = (skip=0,limit=100) => fetchAPI<ApiResponse<SourceDonnees>>(`/api/v1/sources/?skip=${skip}&limit=${limit}`,{useCache:true});
-export const getSource  = (id:number) => fetchAPI<SourceDonnees>(`/api/v1/sources/${id}`,{useCache:true});
+export const getSources = (skip=0,limit=100) => 
+  fetchAPI<ApiResponse<SourceDonnees>>(`/api/v1/sources/?skip=${skip}&limit=${limit}`,{useCache:true});
 
-// ─── GEOJSON ─────────────────────────────────────────────────────────────────
-export const getRegionsGeoJSON         = () => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`,{useCache:true});
-export const getDepartementsGeoJSON    = (regionId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/departements${regionId?'?region_id='+regionId:''}`,{useCache:true});
-export const getCommunesGeoJSON        = (deptId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/communes${deptId?'?departement_id='+deptId:''}`,{useCache:true});
-export const getZonesHalieutiquesGeoJSON=(type?:string) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/zones-halieutiques${type?'?type_zone='+type:''}`,{useCache:true});
-export const getBassinsGeoJSON         = (filId?:number) => fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/bassins${filId?'?filiere_id='+filId:''}`,{useCache:true});
+export const getSource = (id:number) => 
+  fetchAPI<SourceDonnees>(`/api/v1/sources/${id}`,{useCache:true});
+
+// ─── GEOJSON (Cache long - 10 min) ──────────────────────────────────────────
+export const getRegionsGeoJSON = () => 
+  fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/regions`,{useCache:true, cacheTTL: CACHE_TTL_GEOJSON});
+
+export const getDepartementsGeoJSON = (regionId?:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(
+    `/api/v1/geojson/departements${regionId?'?region_id='+regionId:''}`,
+    {useCache:true, cacheTTL: CACHE_TTL_GEOJSON}
+  );
+
+export const getCommunesGeoJSON = (deptId?:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(
+    `/api/v1/geojson/communes${deptId?'?departement_id='+deptId:''}`,
+    {useCache:true, cacheTTL: CACHE_TTL_GEOJSON}
+  );
+
+export const getZonesHalieutiquesGeoJSON = (type?:string) => 
+  fetchAPI<GeoJSONFeatureCollection>(
+    `/api/v1/geojson/zones-halieutiques${type?'?type_zone='+type:''}`,
+    {useCache:true, cacheTTL: CACHE_TTL_GEOJSON}
+  );
+
+export const getBassinsGeoJSON = (filId?:number) => 
+  fetchAPI<GeoJSONFeatureCollection>(
+    `/api/v1/geojson/bassins${filId?'?filiere_id='+filId:''}`,
+    {useCache:true, cacheTTL: CACHE_TTL_GEOJSON}
+  );
+
 export const getInfrastructuresGeoJSON = (type?:string,communeId?:number) => {
-  const p=new URLSearchParams(); if(type) p.append('type_infrastructure',type); if(communeId) p.append('commune_id',String(communeId));
-  return fetchAPI<GeoJSONFeatureCollection>(`/api/v1/geojson/infrastructures${p.toString()?'?'+p:''}`,{useCache:true});
+  const p=new URLSearchParams(); 
+  if(type) p.append('type_infrastructure',type); 
+  if(communeId) p.append('commune_id',String(communeId));
+  return fetchAPI<GeoJSONFeatureCollection>(
+    `/api/v1/geojson/infrastructures${p.toString()?'?'+p:''}`,
+    {useCache:true, cacheTTL: CACHE_TTL_GEOJSON}
+  );
 };
 
 
@@ -3913,7 +4183,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\package.json
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "14.2.18",
+    "next": "16.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "leaflet": "^1.9.4",
@@ -3949,7 +4219,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "dependencies": {
         "leaflet": "^1.9.4",
         "lucide-react": "^0.263.1",
-        "next": "14.2.18",
+        "next": "16.0.1",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-leaflet": "^4.2.1"
@@ -3976,6 +4246,482 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       },
       "funding": {
         "url": "https://github.com/sponsors/sindresorhus"
+      }
+    },
+    "node_modules/@emnapi/runtime": {
+      "version": "1.8.1",
+      "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.8.1.tgz",
+      "integrity": "sha512-mehfKSMWjjNol8659Z8KxEMrdSJDDot5SXMq00dM8BN4o+CLNXQ0xH2V7EchNHV4RmbZLmmPdEaXZc5H2FXmDg==",
+      "license": "MIT",
+      "optional": true,
+      "dependencies": {
+        "tslib": "^2.4.0"
+      }
+    },
+    "node_modules/@img/colour": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/@img/colour/-/colour-1.0.0.tgz",
+      "integrity": "sha512-A5P/LfWGFSl6nsckYtjw9da+19jB8hkJ6ACTGcDfEJ0aE+l2n2El7dsVM7UVHZQ9s2lmYMWlrS21YLy2IR1LUw==",
+      "license": "MIT",
+      "optional": true,
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@img/sharp-darwin-arm64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-darwin-arm64/-/sharp-darwin-arm64-0.34.5.tgz",
+      "integrity": "sha512-imtQ3WMJXbMY4fxb/Ndp6HBTNVtWCUI0WdobyheGf5+ad6xX8VIDO8u2xE4qc/fr08CKG/7dDseFtn6M6g/r3w==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-darwin-arm64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-darwin-x64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-darwin-x64/-/sharp-darwin-x64-0.34.5.tgz",
+      "integrity": "sha512-YNEFAF/4KQ/PeW0N+r+aVVsoIY0/qxxikF2SWdp+NRkmMB7y9LBZAVqQ4yhGCm/H3H270OSykqmQMKLBhBJDEw==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-darwin-x64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-libvips-darwin-arm64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-arm64/-/sharp-libvips-darwin-arm64-1.2.4.tgz",
+      "integrity": "sha512-zqjjo7RatFfFoP0MkQ51jfuFZBnVE2pRiaydKJ1G/rHZvnsrHAOcQALIi9sA5co5xenQdTugCvtb1cuf78Vf4g==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-darwin-x64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-x64/-/sharp-libvips-darwin-x64-1.2.4.tgz",
+      "integrity": "sha512-1IOd5xfVhlGwX+zXv2N93k0yMONvUlANylbJw1eTah8K/Jtpi15KC+WSiaX/nBmbm2HxRM1gZ0nSdjSsrZbGKg==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-arm": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm/-/sharp-libvips-linux-arm-1.2.4.tgz",
+      "integrity": "sha512-bFI7xcKFELdiNCVov8e44Ia4u2byA+l3XtsAj+Q8tfCwO6BQ8iDojYdvoPMqsKDkuoOo+X6HZA0s0q11ANMQ8A==",
+      "cpu": [
+        "arm"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-arm64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm64/-/sharp-libvips-linux-arm64-1.2.4.tgz",
+      "integrity": "sha512-excjX8DfsIcJ10x1Kzr4RcWe1edC9PquDRRPx3YVCvQv+U5p7Yin2s32ftzikXojb1PIFc/9Mt28/y+iRklkrw==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-ppc64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-ppc64/-/sharp-libvips-linux-ppc64-1.2.4.tgz",
+      "integrity": "sha512-FMuvGijLDYG6lW+b/UvyilUWu5Ayu+3r2d1S8notiGCIyYU/76eig1UfMmkZ7vwgOrzKzlQbFSuQfgm7GYUPpA==",
+      "cpu": [
+        "ppc64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-riscv64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-riscv64/-/sharp-libvips-linux-riscv64-1.2.4.tgz",
+      "integrity": "sha512-oVDbcR4zUC0ce82teubSm+x6ETixtKZBh/qbREIOcI3cULzDyb18Sr/Wcyx7NRQeQzOiHTNbZFF1UwPS2scyGA==",
+      "cpu": [
+        "riscv64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-s390x": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-s390x/-/sharp-libvips-linux-s390x-1.2.4.tgz",
+      "integrity": "sha512-qmp9VrzgPgMoGZyPvrQHqk02uyjA0/QrTO26Tqk6l4ZV0MPWIW6LTkqOIov+J1yEu7MbFQaDpwdwJKhbJvuRxQ==",
+      "cpu": [
+        "s390x"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linux-x64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.2.4.tgz",
+      "integrity": "sha512-tJxiiLsmHc9Ax1bz3oaOYBURTXGIRDODBqhveVHonrHJ9/+k89qbLl0bcJns+e4t4rvaNBxaEZsFtSfAdquPrw==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linuxmusl-arm64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-arm64/-/sharp-libvips-linuxmusl-arm64-1.2.4.tgz",
+      "integrity": "sha512-FVQHuwx1IIuNow9QAbYUzJ+En8KcVm9Lk5+uGUQJHaZmMECZmOlix9HnH7n1TRkXMS0pGxIJokIVB9SuqZGGXw==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-libvips-linuxmusl-x64": {
+      "version": "1.2.4",
+      "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-x64/-/sharp-libvips-linuxmusl-x64-1.2.4.tgz",
+      "integrity": "sha512-+LpyBk7L44ZIXwz/VYfglaX/okxezESc6UxDSoyo2Ks6Jxc4Y7sGjpgU9s4PMgqgjj1gZCylTieNamqA1MF7Dg==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-linux-arm": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm/-/sharp-linux-arm-0.34.5.tgz",
+      "integrity": "sha512-9dLqsvwtg1uuXBGZKsxem9595+ujv0sJ6Vi8wcTANSFpwV/GONat5eCkzQo/1O6zRIkh0m/8+5BjrRr7jDUSZw==",
+      "cpu": [
+        "arm"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-arm": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linux-arm64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm64/-/sharp-linux-arm64-0.34.5.tgz",
+      "integrity": "sha512-bKQzaJRY/bkPOXyKx5EVup7qkaojECG6NLYswgktOZjaXecSAeCWiZwwiFf3/Y+O1HrauiE3FVsGxFg8c24rZg==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-arm64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linux-ppc64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-ppc64/-/sharp-linux-ppc64-0.34.5.tgz",
+      "integrity": "sha512-7zznwNaqW6YtsfrGGDA6BRkISKAAE1Jo0QdpNYXNMHu2+0dTrPflTLNkpc8l7MUP5M16ZJcUvysVWWrMefZquA==",
+      "cpu": [
+        "ppc64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-ppc64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linux-riscv64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-riscv64/-/sharp-linux-riscv64-0.34.5.tgz",
+      "integrity": "sha512-51gJuLPTKa7piYPaVs8GmByo7/U7/7TZOq+cnXJIHZKavIRHAP77e3N2HEl3dgiqdD/w0yUfiJnII77PuDDFdw==",
+      "cpu": [
+        "riscv64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-riscv64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linux-s390x": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-s390x/-/sharp-linux-s390x-0.34.5.tgz",
+      "integrity": "sha512-nQtCk0PdKfho3eC5MrbQoigJ2gd1CgddUMkabUj+rBevs8tZ2cULOx46E7oyX+04WGfABgIwmMC0VqieTiR4jg==",
+      "cpu": [
+        "s390x"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-s390x": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linux-x64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linux-x64/-/sharp-linux-x64-0.34.5.tgz",
+      "integrity": "sha512-MEzd8HPKxVxVenwAa+JRPwEC7QFjoPWuS5NZnBt6B3pu7EG2Ge0id1oLHZpPJdn3OQK+BQDiw9zStiHBTJQQQQ==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linux-x64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linuxmusl-arm64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-arm64/-/sharp-linuxmusl-arm64-0.34.5.tgz",
+      "integrity": "sha512-fprJR6GtRsMt6Kyfq44IsChVZeGN97gTD331weR1ex1c1rypDEABN6Tm2xa1wE6lYb5DdEnk03NZPqA7Id21yg==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linuxmusl-arm64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-linuxmusl-x64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-x64/-/sharp-linuxmusl-x64-0.34.5.tgz",
+      "integrity": "sha512-Jg8wNT1MUzIvhBFxViqrEhWDGzqymo3sV7z7ZsaWbZNDLXRJZoRGrjulp60YYtV4wfY8VIKcWidjojlLcWrd8Q==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-libvips-linuxmusl-x64": "1.2.4"
+      }
+    },
+    "node_modules/@img/sharp-wasm32": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-wasm32/-/sharp-wasm32-0.34.5.tgz",
+      "integrity": "sha512-OdWTEiVkY2PHwqkbBI8frFxQQFekHaSSkUIJkwzclWZe64O1X4UlUjqqqLaPbUpMOQk6FBu/HtlGXNblIs0huw==",
+      "cpu": [
+        "wasm32"
+      ],
+      "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
+      "optional": true,
+      "dependencies": {
+        "@emnapi/runtime": "^1.7.0"
+      },
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-win32-arm64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-win32-arm64/-/sharp-win32-arm64-0.34.5.tgz",
+      "integrity": "sha512-WQ3AgWCWYSb2yt+IG8mnC6Jdk9Whs7O0gxphblsLvdhSpSTtmu69ZG1Gkb6NuvxsNACwiPV6cNSZNzt0KPsw7g==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-win32-ia32": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-win32-ia32/-/sharp-win32-ia32-0.34.5.tgz",
+      "integrity": "sha512-FV9m/7NmeCmSHDD5j4+4pNI8Cp3aW+JvLoXcTUo0IqyjSfAZJ8dIUmijx1qaJsIiU+Hosw6xM5KijAWRJCSgNg==",
+      "cpu": [
+        "ia32"
+      ],
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      }
+    },
+    "node_modules/@img/sharp-win32-x64": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/@img/sharp-win32-x64/-/sharp-win32-x64-0.34.5.tgz",
+      "integrity": "sha512-+29YMsqY2/9eFEiW93eqWnuLcWcufowXewwSNIT6UwZdUUCrM3oFjMWH/Z6/TMmb4hlFenmfAVbpWeup2jryCw==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
       }
     },
     "node_modules/@jridgewell/gen-mapping": {
@@ -4018,15 +4764,15 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/env": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/env/-/env-14.2.18.tgz",
-      "integrity": "sha512-2vWLOUwIPgoqMJKG6dt35fVXVhgM09tw4tK3/Q34GFXDrfiHlG7iS33VA4ggnjWxjiz9KV5xzfsQzJX6vGAekA==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/env/-/env-16.0.1.tgz",
+      "integrity": "sha512-LFvlK0TG2L3fEOX77OC35KowL8D7DlFF45C0OvKMC4hy8c/md1RC4UMNDlUGJqfCoCS2VWrZ4dSE6OjaX5+8mw==",
       "license": "MIT"
     },
     "node_modules/@next/swc-darwin-arm64": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-14.2.18.tgz",
-      "integrity": "sha512-tOBlDHCjGdyLf0ube/rDUs6VtwNOajaWV+5FV/ajPgrvHeisllEdymY/oDgv2cx561+gJksfMUtqf8crug7sbA==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-16.0.1.tgz",
+      "integrity": "sha512-R0YxRp6/4W7yG1nKbfu41bp3d96a0EalonQXiMe+1H9GTHfKxGNCGFNWUho18avRBPsO8T3RmdWuzmfurlQPbg==",
       "cpu": [
         "arm64"
       ],
@@ -4040,9 +4786,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-darwin-x64": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-14.2.18.tgz",
-      "integrity": "sha512-uJCEjutt5VeJ30jjrHV1VIHCsbMYnEqytQgvREx+DjURd/fmKy15NaVK4aR/u98S1LGTnjq35lRTnRyygglxoA==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-16.0.1.tgz",
+      "integrity": "sha512-kETZBocRux3xITiZtOtVoVvXyQLB7VBxN7L6EPqgI5paZiUlnsgYv4q8diTNYeHmF9EiehydOBo20lTttCbHAg==",
       "cpu": [
         "x64"
       ],
@@ -4056,9 +4802,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-arm64-gnu": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-14.2.18.tgz",
-      "integrity": "sha512-IL6rU8vnBB+BAm6YSWZewc+qvdL1EaA+VhLQ6tlUc0xp+kkdxQrVqAnh8Zek1ccKHlTDFRyAft0e60gteYmQ4A==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-16.0.1.tgz",
+      "integrity": "sha512-hWg3BtsxQuSKhfe0LunJoqxjO4NEpBmKkE+P2Sroos7yB//OOX3jD5ISP2wv8QdUwtRehMdwYz6VB50mY6hqAg==",
       "cpu": [
         "arm64"
       ],
@@ -4072,9 +4818,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-arm64-musl": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-14.2.18.tgz",
-      "integrity": "sha512-RCaENbIZqKKqTlL8KNd+AZV/yAdCsovblOpYFp0OJ7ZxgLNbV5w23CUU1G5On+0fgafrsGcW+GdMKdFjaRwyYA==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-16.0.1.tgz",
+      "integrity": "sha512-UPnOvYg+fjAhP3b1iQStcYPWeBFRLrugEyK/lDKGk7kLNua8t5/DvDbAEFotfV1YfcOY6bru76qN9qnjLoyHCQ==",
       "cpu": [
         "arm64"
       ],
@@ -4088,9 +4834,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-x64-gnu": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-14.2.18.tgz",
-      "integrity": "sha512-3kmv8DlyhPRCEBM1Vavn8NjyXtMeQ49ID0Olr/Sut7pgzaQTo4h01S7Z8YNE0VtbowyuAL26ibcz0ka6xCTH5g==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-16.0.1.tgz",
+      "integrity": "sha512-Et81SdWkcRqAJziIgFtsFyJizHoWne4fzJkvjd6V4wEkWTB4MX6J0uByUb0peiJQ4WeAt6GGmMszE5KrXK6WKg==",
       "cpu": [
         "x64"
       ],
@@ -4104,9 +4850,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-x64-musl": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-14.2.18.tgz",
-      "integrity": "sha512-mliTfa8seVSpTbVEcKEXGjC18+TDII8ykW4a36au97spm9XMPqQTpdGPNBJ9RySSFw9/hLuaCMByluQIAnkzlw==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-16.0.1.tgz",
+      "integrity": "sha512-qBbgYEBRrC1egcG03FZaVfVxrJm8wBl7vr8UFKplnxNRprctdP26xEv9nJ07Ggq4y1adwa0nz2mz83CELY7N6Q==",
       "cpu": [
         "x64"
       ],
@@ -4120,9 +4866,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-win32-arm64-msvc": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-14.2.18.tgz",
-      "integrity": "sha512-J5g0UFPbAjKYmqS3Cy7l2fetFmWMY9Oao32eUsBPYohts26BdrMUyfCJnZFQkX9npYaHNDOWqZ6uV9hSDPw9NA==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-16.0.1.tgz",
+      "integrity": "sha512-cPuBjYP6I699/RdbHJonb3BiRNEDm5CKEBuJ6SD8k3oLam2fDRMKAvmrli4QMDgT2ixyRJ0+DTkiODbIQhRkeQ==",
       "cpu": [
         "arm64"
       ],
@@ -4135,26 +4881,10 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">= 10"
       }
     },
-    "node_modules/@next/swc-win32-ia32-msvc": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-win32-ia32-msvc/-/swc-win32-ia32-msvc-14.2.18.tgz",
-      "integrity": "sha512-Ynxuk4ZgIpdcN7d16ivJdjsDG1+3hTvK24Pp8DiDmIa2+A4CfhJSEHHVndCHok6rnLUzAZD+/UOKESQgTsAZGg==",
-      "cpu": [
-        "ia32"
-      ],
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "win32"
-      ],
-      "engines": {
-        "node": ">= 10"
-      }
-    },
     "node_modules/@next/swc-win32-x64-msvc": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-14.2.18.tgz",
-      "integrity": "sha512-dtRGMhiU9TN5nyhwzce+7c/4CCeykYS+ipY/4mIrGzJ71+7zNo55ZxCB7cAVuNqdwtYniFNR2c9OFQ6UdFIMcg==",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-16.0.1.tgz",
+      "integrity": "sha512-XeEUJsE4JYtfrXe/LaJn3z1pD19fK0Q6Er8Qoufi+HqvdO4LEPyCxLUt4rxA+4RfYo6S9gMlmzCMU2F+AatFqQ==",
       "cpu": [
         "x64"
       ],
@@ -4216,20 +4946,13 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "react-dom": "^18.0.0"
       }
     },
-    "node_modules/@swc/counter": {
-      "version": "0.1.3",
-      "resolved": "https://registry.npmjs.org/@swc/counter/-/counter-0.1.3.tgz",
-      "integrity": "sha512-e2BR4lsJkkRlKZ/qCHPw9ZaSxc0MVUd7gtbtaB7aMvHeJVYe8sOB8DBZkP2DtISHGSku9sCK6T6cnY0CtXrOCQ==",
-      "license": "Apache-2.0"
-    },
     "node_modules/@swc/helpers": {
-      "version": "0.5.5",
-      "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.5.5.tgz",
-      "integrity": "sha512-KGYxvIOXcceOAbEk4bi/dVLEK9z8sZ0uBB3Il5b1rhfClSpcX0yfRO0KmTkqR2cnQDymwLB+25ZyMzICg/cm/A==",
+      "version": "0.5.15",
+      "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.5.15.tgz",
+      "integrity": "sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==",
       "license": "Apache-2.0",
       "dependencies": {
-        "@swc/counter": "^0.1.3",
-        "tslib": "^2.4.0"
+        "tslib": "^2.8.0"
       }
     },
     "node_modules/@types/geojson": {
@@ -4306,6 +5029,19 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       },
       "engines": {
         "node": ">= 8"
+      }
+    },
+    "node_modules/anymatch/node_modules/picomatch": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
+      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
       }
     },
     "node_modules/arg": {
@@ -4422,17 +5158,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": "^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7"
       }
     },
-    "node_modules/busboy": {
-      "version": "1.6.0",
-      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
-      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
-      "dependencies": {
-        "streamsearch": "^1.1.0"
-      },
-      "engines": {
-        "node": ">=10.16.0"
-      }
-    },
     "node_modules/camelcase-css": {
       "version": "2.0.1",
       "resolved": "https://registry.npmjs.org/camelcase-css/-/camelcase-css-2.0.1.tgz",
@@ -4536,6 +5261,16 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
       "dev": true,
       "license": "MIT"
+    },
+    "node_modules/detect-libc": {
+      "version": "2.1.2",
+      "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
+      "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
+      "license": "Apache-2.0",
+      "optional": true,
+      "engines": {
+        "node": ">=8"
+      }
     },
     "node_modules/didyoumean": {
       "version": "1.2.2",
@@ -4690,12 +5425,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "engines": {
         "node": ">=10.13.0"
       }
-    },
-    "node_modules/graceful-fs": {
-      "version": "4.2.11",
-      "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-      "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-      "license": "ISC"
     },
     "node_modules/hasown": {
       "version": "2.0.2",
@@ -4859,6 +5588,19 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">=8.6"
       }
     },
+    "node_modules/micromatch/node_modules/picomatch": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
+      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
     "node_modules/mz": {
       "version": "2.7.0",
       "resolved": "https://registry.npmjs.org/mz/-/mz-2.7.0.tgz",
@@ -4890,42 +5632,41 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/next": {
-      "version": "14.2.18",
-      "resolved": "https://registry.npmjs.org/next/-/next-14.2.18.tgz",
-      "integrity": "sha512-H9qbjDuGivUDEnK6wa+p2XKO+iMzgVgyr9Zp/4Iv29lKa+DYaxJGjOeEA+5VOvJh/M7HLiskehInSa0cWxVXUw==",
-      "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/security-update-2025-12-11 for more details.",
+      "version": "16.0.1",
+      "resolved": "https://registry.npmjs.org/next/-/next-16.0.1.tgz",
+      "integrity": "sha512-e9RLSssZwd35p7/vOa+hoDFggUZIUbZhIUSLZuETCwrCVvxOs87NamoUzT+vbcNAL8Ld9GobBnWOA6SbV/arOw==",
+      "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/CVE-2025-66478 for more details.",
       "license": "MIT",
       "dependencies": {
-        "@next/env": "14.2.18",
-        "@swc/helpers": "0.5.5",
-        "busboy": "1.6.0",
+        "@next/env": "16.0.1",
+        "@swc/helpers": "0.5.15",
         "caniuse-lite": "^1.0.30001579",
-        "graceful-fs": "^4.2.11",
         "postcss": "8.4.31",
-        "styled-jsx": "5.1.1"
+        "styled-jsx": "5.1.6"
       },
       "bin": {
         "next": "dist/bin/next"
       },
       "engines": {
-        "node": ">=18.17.0"
+        "node": ">=20.9.0"
       },
       "optionalDependencies": {
-        "@next/swc-darwin-arm64": "14.2.18",
-        "@next/swc-darwin-x64": "14.2.18",
-        "@next/swc-linux-arm64-gnu": "14.2.18",
-        "@next/swc-linux-arm64-musl": "14.2.18",
-        "@next/swc-linux-x64-gnu": "14.2.18",
-        "@next/swc-linux-x64-musl": "14.2.18",
-        "@next/swc-win32-arm64-msvc": "14.2.18",
-        "@next/swc-win32-ia32-msvc": "14.2.18",
-        "@next/swc-win32-x64-msvc": "14.2.18"
+        "@next/swc-darwin-arm64": "16.0.1",
+        "@next/swc-darwin-x64": "16.0.1",
+        "@next/swc-linux-arm64-gnu": "16.0.1",
+        "@next/swc-linux-arm64-musl": "16.0.1",
+        "@next/swc-linux-x64-gnu": "16.0.1",
+        "@next/swc-linux-x64-musl": "16.0.1",
+        "@next/swc-win32-arm64-msvc": "16.0.1",
+        "@next/swc-win32-x64-msvc": "16.0.1",
+        "sharp": "^0.34.4"
       },
       "peerDependencies": {
         "@opentelemetry/api": "^1.1.0",
-        "@playwright/test": "^1.41.2",
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0",
+        "@playwright/test": "^1.51.1",
+        "babel-plugin-react-compiler": "*",
+        "react": "^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0",
+        "react-dom": "^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0",
         "sass": "^1.3.0"
       },
       "peerDependenciesMeta": {
@@ -4933,6 +5674,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
           "optional": true
         },
         "@playwright/test": {
+          "optional": true
+        },
+        "babel-plugin-react-compiler": {
           "optional": true
         },
         "sass": {
@@ -5019,13 +5763,13 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "license": "ISC"
     },
     "node_modules/picomatch": {
-      "version": "2.3.1",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
-      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
+      "version": "4.0.3",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
+      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
       "dev": true,
       "license": "MIT",
       "engines": {
-        "node": ">=8.6"
+        "node": ">=12"
       },
       "funding": {
         "url": "https://github.com/sponsors/jonschlinkert"
@@ -5297,6 +6041,19 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">=8.10.0"
       }
     },
+    "node_modules/readdirp/node_modules/picomatch": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
+      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=8.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
     "node_modules/resolve": {
       "version": "1.22.11",
       "resolved": "https://registry.npmjs.org/resolve/-/resolve-1.22.11.tgz",
@@ -5362,6 +6119,64 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "loose-envify": "^1.1.0"
       }
     },
+    "node_modules/semver": {
+      "version": "7.7.4",
+      "resolved": "https://registry.npmjs.org/semver/-/semver-7.7.4.tgz",
+      "integrity": "sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==",
+      "license": "ISC",
+      "optional": true,
+      "bin": {
+        "semver": "bin/semver.js"
+      },
+      "engines": {
+        "node": ">=10"
+      }
+    },
+    "node_modules/sharp": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
+      "integrity": "sha512-Ou9I5Ft9WNcCbXrU9cMgPBcCK8LiwLqcbywW3t4oDV37n1pzpuNLsYiAV8eODnjbtQlSDwZ2cUEeQz4E54Hltg==",
+      "hasInstallScript": true,
+      "license": "Apache-2.0",
+      "optional": true,
+      "dependencies": {
+        "@img/colour": "^1.0.0",
+        "detect-libc": "^2.1.2",
+        "semver": "^7.7.3"
+      },
+      "engines": {
+        "node": "^18.17.0 || ^20.3.0 || >=21.0.0"
+      },
+      "funding": {
+        "url": "https://opencollective.com/libvips"
+      },
+      "optionalDependencies": {
+        "@img/sharp-darwin-arm64": "0.34.5",
+        "@img/sharp-darwin-x64": "0.34.5",
+        "@img/sharp-libvips-darwin-arm64": "1.2.4",
+        "@img/sharp-libvips-darwin-x64": "1.2.4",
+        "@img/sharp-libvips-linux-arm": "1.2.4",
+        "@img/sharp-libvips-linux-arm64": "1.2.4",
+        "@img/sharp-libvips-linux-ppc64": "1.2.4",
+        "@img/sharp-libvips-linux-riscv64": "1.2.4",
+        "@img/sharp-libvips-linux-s390x": "1.2.4",
+        "@img/sharp-libvips-linux-x64": "1.2.4",
+        "@img/sharp-libvips-linuxmusl-arm64": "1.2.4",
+        "@img/sharp-libvips-linuxmusl-x64": "1.2.4",
+        "@img/sharp-linux-arm": "0.34.5",
+        "@img/sharp-linux-arm64": "0.34.5",
+        "@img/sharp-linux-ppc64": "0.34.5",
+        "@img/sharp-linux-riscv64": "0.34.5",
+        "@img/sharp-linux-s390x": "0.34.5",
+        "@img/sharp-linux-x64": "0.34.5",
+        "@img/sharp-linuxmusl-arm64": "0.34.5",
+        "@img/sharp-linuxmusl-x64": "0.34.5",
+        "@img/sharp-wasm32": "0.34.5",
+        "@img/sharp-win32-arm64": "0.34.5",
+        "@img/sharp-win32-ia32": "0.34.5",
+        "@img/sharp-win32-x64": "0.34.5"
+      }
+    },
     "node_modules/source-map-js": {
       "version": "1.2.1",
       "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
@@ -5371,18 +6186,10 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">=0.10.0"
       }
     },
-    "node_modules/streamsearch": {
-      "version": "1.1.0",
-      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
-      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
-      "engines": {
-        "node": ">=10.0.0"
-      }
-    },
     "node_modules/styled-jsx": {
-      "version": "5.1.1",
-      "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.1.tgz",
-      "integrity": "sha512-pW7uC1l4mBZ8ugbiZrcIsiIvVx1UmTfw7UkC3Um2tmfUq9Bhk8IiyEIPl6F8agHgjzku6j0xQEZbfA5uSgSaCw==",
+      "version": "5.1.6",
+      "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.6.tgz",
+      "integrity": "sha512-qSVyDTeMotdvQYoHWLNGwRFJHC+i+ZvdBRYosOFgC+Wg1vx4frN2/RG/NA7SYqqvKNLf39P2LSRA2pu6n0XYZA==",
       "license": "MIT",
       "dependencies": {
         "client-only": "0.0.1"
@@ -5391,7 +6198,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">= 12.0.0"
       },
       "peerDependencies": {
-        "react": ">= 16.8.0 || 17.x.x || ^18.0.0-0"
+        "react": ">= 16.8.0 || 17.x.x || ^18.0.0-0 || ^19.0.0-0"
       },
       "peerDependenciesMeta": {
         "@babel/core": {
@@ -5514,19 +6321,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       },
       "funding": {
         "url": "https://github.com/sponsors/SuperchupuDev"
-      }
-    },
-    "node_modules/tinyglobby/node_modules/picomatch": {
-      "version": "4.0.3",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
-      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
-      "dev": true,
-      "license": "MIT",
-      "engines": {
-        "node": ">=12"
-      },
-      "funding": {
-        "url": "https://github.com/sponsors/jonschlinkert"
       }
     },
     "node_modules/to-regex-range": {

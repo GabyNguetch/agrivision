@@ -54,9 +54,9 @@ export default function Sidebar({
   // ── Initial load ─────────────────────────────────────────────────────────
   useEffect(() => { loadFilieres(); loadAnnees(); }, []);
 
-  // ── Cascade: filière → catégories ────────────────────────────────────────
+  // Modifiez la condition et l'appel pour être plus précis
   useEffect(() => {
-    if (selectedFiliere) {
+    if (selectedFiliere !== null) {
       loadCategories(selectedFiliere);
       setOpenSections(p => ({ ...p, categories: true }));
     } else {
@@ -67,11 +67,12 @@ export default function Sidebar({
 
   // ── Cascade: catégorie / filière → produits ──────────────────────────────
   useEffect(() => {
-    if (selectedCategorie) {
-      loadProduits(selectedCategorie, selectedFiliere);
+    if (selectedCategorie !== null) {
+      // On convertit le null potentiel en undefined pour satisfaire le type du paramètre optionnel
+      loadProduits(selectedCategorie, selectedFiliere ?? undefined);
       setOpenSections(p => ({ ...p, produits: true }));
-    } else if (selectedFiliere) {
-      loadProduits(undefined, selectedFiliere);
+    } else if (selectedFiliere !== null) {
+      loadProduits(undefined, selectedFiliere ?? undefined);
     } else {
       setProduits([]);
       setSelectedProduit(null);
