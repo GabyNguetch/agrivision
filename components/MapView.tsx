@@ -301,10 +301,6 @@ export default memo(function MapView({
     }
   }, [selectedFeatureId]);
 
-  if (loading) {
-    return <MapSkeleton />;
-  }
-
   return (
     <div className="relative w-full h-full">
       <div
