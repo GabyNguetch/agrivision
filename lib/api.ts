@@ -5,7 +5,10 @@ import type {
   StatistiquesGlobales, ZoneHalieutique, BassinProduction, SourceDonnees,
 } from '@/types/api';
 
-const API_BASE_URL = 'https://apiti.onrender.com';
+// Utilise les rewrites Next.js en production, direct en dev pour les logs
+const API_BASE_URL = process.env.NODE_ENV === 'production' 
+  ? '' // Utilise les rewrites (pas de préfixe)
+  : 'https://apiti.onrender.com'; // Direct en dev
 
 // ─── Cache amélioré (TTL 10 min pour GeoJSON, 5 min pour le reste) ──────────
 const CACHE_TTL_GEOJSON = 10 * 60 * 1000; // 10 minutes pour GeoJSON
