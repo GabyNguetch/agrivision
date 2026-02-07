@@ -1,4 +1,4 @@
-// ─── Service API avec cache optimisé + console logging ──────────────────────
+// ─── Service API avec cache optimisé + console logging détaillé ─────────────
 import type {
   Region, Departement, Commune, Filiere, CategorieProduit, Produit,
   Production, Infrastructure, ApiResponse, GeoJSONFeatureCollection,
@@ -41,7 +41,7 @@ setInterval(() => {
   }
 }, 60000); // Nettoie toutes les minutes
 
-// ─── Core fetch optimisé ─────────────────────────────────────────────────────
+// ─── Core fetch optimisé avec logs détaillés ─────────────────────────────────
 async function fetchAPI<T>(
   endpoint: string, 
   options?: RequestInit & { useCache?: boolean; cacheTTL?: number }
@@ -53,12 +53,20 @@ async function fetchAPI<T>(
   if (useCache) {
     const cached = getFromCache<T>(endpoint, cacheTTL);
     if (cached) {
-      console.log('%c[API ⚡ CACHE] %c' + endpoint, 'color:#10b981;font-weight:700', 'color:#6b7280');
+      console.log(
+        '%c[API ⚡ CACHE] %c' + endpoint, 
+        'color:#10b981;font-weight:700;font-size:12px;', 
+        'color:#6b7280;font-size:11px;'
+      );
       return cached;
     }
   }
 
-  console.log('%c[API →] %c' + endpoint, 'color:#3b82f6;font-weight:700', 'color:#6b7280');
+  console.log(
+    '%c[API →] %c' + endpoint, 
+    'color:#3b82f6;font-weight:700;font-size:12px;', 
+    'color:#6b7280;font-size:11px;'
+  );
   const start = performance.now();
 
   try {
@@ -69,7 +77,6 @@ async function fetchAPI<T>(
         'Content-Type': 'application/json', 
         ...fetchOpts?.headers 
       },
-      // Ajout de timeout
       signal: AbortSignal.timeout(15000) // 15 secondes max
     });
     
@@ -77,20 +84,42 @@ async function fetchAPI<T>(
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error('%c[API ✕] %c' + endpoint + ' — ' + response.status, 'color:#ef4444;font-weight:700', 'color:#6b7280', errText);
+      console.error(
+        '%c[API ✕] %c' + endpoint + ' — ' + response.status, 
+        'color:#ef4444;font-weight:700;font-size:12px;', 
+        'color:#6b7280;font-size:11px;', 
+        '\n📋 Error:', errText
+      );
       throw new Error(`API Error: ${response.status} - ${errText}`);
     }
 
     const data = await response.json();
-    console.log('%c[API ✓] %c' + endpoint + ' %c(' + elapsed + ' ms)', 'color:#22c55e;font-weight:700', 'color:#6b7280', 'color:#9ca3af');
+    
+    // Log détaillé de la réponse
+    console.log(
+      '%c[API ✓] %c' + endpoint + ' %c(' + elapsed + ' ms)', 
+      'color:#22c55e;font-weight:700;font-size:12px;', 
+      'color:#6b7280;font-size:11px;', 
+      'color:#9ca3af;font-size:10px;'
+    );
+    console.log('%c📦 Response:', 'color:#8b5cf6;font-weight:600;', data);
     
     if (useCache) setInCache(endpoint, data);
     return data;
   } catch (error) {
     if (error instanceof Error && error.name === 'TimeoutError') {
-      console.error('%c[API ⏱️  TIMEOUT] %c' + endpoint, 'color:#f59e0b;font-weight:700', 'color:#6b7280');
+      console.error(
+        '%c[API ⏱️  TIMEOUT] %c' + endpoint, 
+        'color:#f59e0b;font-weight:700;font-size:12px;', 
+        'color:#6b7280;font-size:11px;'
+      );
     } else {
-      console.error('%c[API ✕] %c' + endpoint, 'color:#ef4444;font-weight:700', 'color:#6b7280', error);
+      console.error(
+        '%c[API ✕] %c' + endpoint, 
+        'color:#ef4444;font-weight:700;font-size:12px;', 
+        'color:#6b7280;font-size:11px;', 
+        error
+      );
     }
     throw error;
   }
@@ -228,7 +257,9 @@ export const getProductions = (params: Record<string,any>) => {
   Object.entries(params).forEach(([k,v])=> { 
     if(v!=null) sp.append(k,String(v)); 
   });
-  return fetchAPI<ApiResponse<Production>>(`/api/v1/productions/?${sp}`);
+  const endpoint = `/api/v1/productions/?${sp}`;
+  console.log('%c🔍 Production Query:', 'color:#f59e0b;font-weight:700;', params);
+  return fetchAPI<ApiResponse<Production>>(endpoint);
 };
 
 export const getAnneesDisponibles = () => 
