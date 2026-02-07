@@ -28,8 +28,9 @@ const DetailMap = dynamic(() => import('@/components/DetailMap'), {
   ),
 });
 
-export default function DetailPage({ params }: { params: { id: string } }) {
-  const id = Number(params.id);
+// FIX: Next.js 15 - params est maintenant une Promise
+export default function DetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const [id, setId] = useState<number | null>(null);
   const searchParams = useSearchParams();
   const level = (searchParams.get('level') || 'regions') as MapLevel;
 
@@ -44,7 +45,16 @@ export default function DetailPage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // FIX: Résoudre la Promise params
   useEffect(() => {
+    params.then(resolvedParams => {
+      setId(Number(resolvedParams.id));
+    });
+  }, [params]);
+
+  useEffect(() => {
+    if (id === null) return;
+    
     let cancelled = false;
 
     (async () => {
@@ -224,7 +234,7 @@ export default function DetailPage({ params }: { params: { id: string } }) {
         <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
           {/* Carte hero */}
           <div className="anim-fadeIn rounded-2xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800" style={{ height: '400px' }}>
-            <DetailMap geoData={geoData} targetId={id} />
+            <DetailMap geoData={geoData} targetId={id!} />
           </div>
 
           {/* KPI Cards */}
