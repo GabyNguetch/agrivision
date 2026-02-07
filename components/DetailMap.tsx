@@ -14,92 +14,111 @@ interface DetailMapProps {
 export default function DetailMap({ geoData, targetId }: DetailMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const isCleaningUpRef = useRef(false);
 
   useEffect(() => {
-    if (!containerRef.current || !geoData) return;
+    if (!containerRef.current || !geoData || isCleaningUpRef.current) return;
 
     // Destroy previous instance
     if (mapRef.current) {
-      mapRef.current.remove();
-      mapRef.current = null;
+      try {
+        mapRef.current.off();
+        mapRef.current.remove();
+        mapRef.current = null;
+      } catch (e) {
+        console.warn('Error removing previous map:', e);
+      }
     }
 
     console.log('%c🗺️  [DetailMap] Initializing detail map with MapTiler', 'color: #22c55e; font-weight: bold');
 
-    const map = L.map(containerRef.current, {
-      center: [7.3697, 12.3547],
-      zoom: 6,
-      zoomControl: true,
-      preferCanvas: true,
-      fadeAnimation: true,
-      attributionControl: false,
-    });
-
-    // Attribution
-    L.control.attribution({
-      position: 'bottomright',
-      prefix: false,
-    }).addAttribution(
-      '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a>'
-    ).addTo(map);
-
-    // MapTiler Satellite Hybrid (Pour les détails)
-    L.tileLayer(
-      `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`,
-      {
-        tileSize: 512,
-        zoomOffset: -1,
-        minZoom: 1,
-        maxZoom: 20,
-        crossOrigin: true,
-      }
-    ).addTo(map);
-
-    let targetBounds: L.LatLngBounds | null = null;
-
-    L.geoJSON(geoData, {
-      style: (feature: any) => {
-        const isTarget = feature?.properties?.id === targetId;
-        return {
-          fillColor: isTarget ? '#22c55e' : '#d1fae5',
-          weight: isTarget ? 4 : 1.5,
-          opacity: 1,
-          color: isTarget ? '#15803d' : '#86efac',
-          fillOpacity: isTarget ? 0.75 : 0.3,
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const name = feature.properties?.nom || feature.properties?.name || '';
-        if (name) {
-          layer.bindTooltip(name, {
-            permanent: feature.properties?.id === targetId,
-            direction: 'center',
-            className: 'detail-map-tooltip',
-          });
-        }
-        if (feature.properties?.id === targetId) {
-          try {
-            targetBounds = (layer as any).getBounds();
-          } catch (_) {}
-        }
-      },
-    }).addTo(map);
-
-    // Zoom into target
-    if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
-      map.fitBounds(targetBounds as L.LatLngBounds, {
-        padding: [40, 40],
-        maxZoom: 13,
-        animate: true,
-        duration: 0.8,
+    try {
+      const map = L.map(containerRef.current, {
+        center: [7.3697, 12.3547],
+        zoom: 6,
+        zoomControl: true,
+        preferCanvas: true,
+        fadeAnimation: true,
+        attributionControl: false,
       });
+
+      // Attribution
+      L.control.attribution({
+        position: 'bottomright',
+        prefix: false,
+      }).addAttribution(
+        '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a>'
+      ).addTo(map);
+
+      // MapTiler Satellite Hybrid (Pour les détails)
+      L.tileLayer(
+        `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`,
+        {
+          tileSize: 512,
+          zoomOffset: -1,
+          minZoom: 1,
+          maxZoom: 20,
+          crossOrigin: true,
+        }
+      ).addTo(map);
+
+      let targetBounds: L.LatLngBounds | null = null;
+
+      L.geoJSON(geoData, {
+        style: (feature: any) => {
+          const isTarget = feature?.properties?.id === targetId;
+          return {
+            fillColor: isTarget ? '#22c55e' : '#d1fae5',
+            weight: isTarget ? 4 : 1.5,
+            opacity: 1,
+            color: isTarget ? '#15803d' : '#86efac',
+            fillOpacity: isTarget ? 0.75 : 0.3,
+          };
+        },
+        onEachFeature: (feature, layer) => {
+          const name = feature.properties?.nom || feature.properties?.name || '';
+          if (name) {
+            layer.bindTooltip(name, {
+              permanent: feature.properties?.id === targetId,
+              direction: 'center',
+              className: 'detail-map-tooltip',
+            });
+          }
+          if (feature.properties?.id === targetId) {
+            try {
+              targetBounds = (layer as any).getBounds();
+            } catch (_) {}
+          }
+        },
+      }).addTo(map);
+
+      // Zoom into target
+      if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
+        map.fitBounds(targetBounds as L.LatLngBounds, {
+          padding: [40, 40],
+          maxZoom: 13,
+          animate: true,
+          duration: 0.8,
+        });
+      }
+
+      mapRef.current = map;
+    } catch (error) {
+      console.error('%c❌ DetailMap init failed:', 'color: #ef4444', error);
     }
 
-    mapRef.current = map;
-
     return () => {
-      map.remove();
-      mapRef.current = null;
+      isCleaningUpRef.current = true;
+      if (mapRef.current) {
+        try {
+          mapRef.current.off();
+          mapRef.current.remove();
+          mapRef.current = null;
+        } catch (e) {
+          console.warn('Error cleaning up map:', e);
+        }
+      }
+      isCleaningUpRef.current = false;
     };
   }, [geoData, targetId]);
 

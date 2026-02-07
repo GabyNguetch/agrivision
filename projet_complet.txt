@@ -57,7 +57,7 @@ export default function DetailPage({ params }: { params: { id: string } }) {
       setError(null);
 
       try {
-        let ent: any, prods: any[], kids: any[], infras: any[], geo: any;
+        let ent: any, prods: any, kids: any, infras: any, geo: any;
         let fils: any, cats: any, prts: any;
 
         // Charger les données de base
@@ -1822,6 +1822,7 @@ export default memo(function MapView({
   const onFeatureClickRef = useRef(onFeatureClick);
   const currentGeoDataRef = useRef<GeoJSONFeatureCollection | null>(null);
   const layersByIdRef = useRef<Map<number, L.Layer>>(new Map());
+  const isCleaningUpRef = useRef(false);
 
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick;
@@ -1829,7 +1830,7 @@ export default memo(function MapView({
 
   // ── Initialisation carte (une seule fois) ────────────────────────────────
   useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) return;
+    if (!mapContainerRef.current || mapRef.current || isCleaningUpRef.current) return;
 
     console.log('%c🗺️  [MapView] Initializing map...', 'color: #22c55e; font-weight: bold');
     
@@ -1878,18 +1879,37 @@ export default memo(function MapView({
     }
 
     return () => {
-      if (mapRef.current) {
-        console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
-        mapRef.current.remove();
-        mapRef.current = null;
-        setMapReady(false);
+      console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
+      isCleaningUpRef.current = true;
+      
+      if (geoJsonLayerRef.current && mapRef.current) {
+        try {
+          mapRef.current.removeLayer(geoJsonLayerRef.current);
+          geoJsonLayerRef.current = null;
+        } catch (e) {
+          console.warn('Error removing GeoJSON layer:', e);
+        }
       }
+      
+      if (mapRef.current) {
+        try {
+          mapRef.current.off();
+          mapRef.current.remove();
+          mapRef.current = null;
+        } catch (e) {
+          console.warn('Error removing map:', e);
+        }
+      }
+      
+      layersByIdRef.current.clear();
+      setMapReady(false);
+      isCleaningUpRef.current = false;
     };
   }, []);
 
   // ── Mise à jour GeoJSON OPTIMISÉE (incrémentale si possible) ──────────────
   useEffect(() => {
-    if (!mapRef.current || !mapReady || !geoData) return;
+    if (!mapRef.current || !mapReady || !geoData || isCleaningUpRef.current) return;
 
     const startTime = performance.now();
     
@@ -1909,16 +1929,20 @@ export default memo(function MapView({
         
         const layer = layersByIdRef.current.get(id);
         if (layer && layer instanceof L.Path) {
-          const isSelected = id === selectedFeatureId;
-          const baseColor = getFeatureColor(feature);
-          
-          layer.setStyle({
-            fillColor: isSelected ? '#22c55e' : baseColor,
-            weight: isSelected ? 3 : 1.5,
-            opacity: 1,
-            color: isSelected ? '#15803d' : '#16a34a',
-            fillOpacity: isSelected ? 0.85 : 0.65,
-          });
+          try {
+            const isSelected = id === selectedFeatureId;
+            const baseColor = getFeatureColor(feature);
+            
+            layer.setStyle({
+              fillColor: isSelected ? '#22c55e' : baseColor,
+              weight: isSelected ? 3 : 1.5,
+              opacity: 1,
+              color: isSelected ? '#15803d' : '#16a34a',
+              fillOpacity: isSelected ? 0.85 : 0.65,
+            });
+          } catch (e) {
+            console.warn('Error updating layer style:', e);
+          }
         }
       });
       
@@ -1931,105 +1955,117 @@ export default memo(function MapView({
     // Sinon, re-créer la couche complète
     console.log(`%c🔄 Full GeoJSON update - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
 
-    if (geoJsonLayerRef.current) {
-      mapRef.current.removeLayer(geoJsonLayerRef.current);
-      geoJsonLayerRef.current = null;
+    if (geoJsonLayerRef.current && mapRef.current) {
+      try {
+        mapRef.current.removeLayer(geoJsonLayerRef.current);
+        geoJsonLayerRef.current = null;
+      } catch (e) {
+        console.warn('Error removing old GeoJSON layer:', e);
+      }
     }
     
     layersByIdRef.current.clear();
 
-    const geoJsonLayer = L.geoJSON(geoData, {
-      style: (feature) => {
-        const isSelected = feature?.properties?.id === selectedFeatureId;
-        const baseColor = getFeatureColor(feature);
+    try {
+      const geoJsonLayer = L.geoJSON(geoData, {
+        style: (feature) => {
+          const isSelected = feature?.properties?.id === selectedFeatureId;
+          const baseColor = getFeatureColor(feature);
 
-        return {
-          fillColor: isSelected ? '#22c55e' : baseColor,
-          weight: isSelected ? 3 : 1.5,
-          opacity: 1,
-          color: isSelected ? '#15803d' : '#16a34a',
-          fillOpacity: isSelected ? 0.85 : 0.65,
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const props = feature.properties;
-        if (!props) return;
+          return {
+            fillColor: isSelected ? '#22c55e' : baseColor,
+            weight: isSelected ? 3 : 1.5,
+            opacity: 1,
+            color: isSelected ? '#15803d' : '#16a34a',
+            fillOpacity: isSelected ? 0.85 : 0.65,
+          };
+        },
+        onEachFeature: (feature, layer) => {
+          const props = feature.properties;
+          if (!props) return;
 
-        // Sauvegarder la référence au layer
-        if (props.id) {
-          layersByIdRef.current.set(props.id, layer);
-        }
-
-        const name = props.nom || props.name || 'Sans nom';
-
-        // Tooltip
-        const tooltipContent = `
-          <div class="font-semibold text-base">${name}</div>
-          ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
-          ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
-          ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
-          ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
-        `;
-
-        layer.bindTooltip(tooltipContent, {
-          permanent: false,
-          direction: 'center',
-          className: 'map-tooltip',
-          opacity: 0.95,
-        });
-
-        // Click handler
-        layer.on('click', () => {
-          console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
-          if (onFeatureClickRef.current) {
-            onFeatureClickRef.current(props);
+          // Sauvegarder la référence au layer
+          if (props.id) {
+            layersByIdRef.current.set(props.id, layer);
           }
-        });
 
-        // Hover effects
-        layer.on('mouseover', function (this: any) {
-          if (this.setStyle) {
-            this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
-          }
-        });
-        
-        layer.on('mouseout', function (this: any) {
-          if (this.setStyle) {
-            const isSelected = props.id === selectedFeatureId;
-            this.setStyle({
-              fillOpacity: isSelected ? 0.85 : 0.65,
-              weight: isSelected ? 3 : 1.5,
+          const name = props.nom || props.name || 'Sans nom';
+
+          // Tooltip
+          const tooltipContent = `
+            <div class="font-semibold text-base">${name}</div>
+            ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
+            ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
+            ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
+            ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
+          `;
+
+          layer.bindTooltip(tooltipContent, {
+            permanent: false,
+            direction: 'center',
+            className: 'map-tooltip',
+            opacity: 0.95,
+          });
+
+          // Click handler
+          layer.on('click', () => {
+            if (!isCleaningUpRef.current) {
+              console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
+              if (onFeatureClickRef.current) {
+                onFeatureClickRef.current(props);
+              }
+            }
+          });
+
+          // Hover effects
+          layer.on('mouseover', function (this: any) {
+            if (!isCleaningUpRef.current && this.setStyle) {
+              this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+            }
+          });
+          
+          layer.on('mouseout', function (this: any) {
+            if (!isCleaningUpRef.current && this.setStyle) {
+              const isSelected = props.id === selectedFeatureId;
+              this.setStyle({
+                fillOpacity: isSelected ? 0.85 : 0.65,
+                weight: isSelected ? 3 : 1.5,
+              });
+            }
+          });
+        },
+      });
+
+      if (mapRef.current && !isCleaningUpRef.current) {
+        geoJsonLayer.addTo(mapRef.current);
+        geoJsonLayerRef.current = geoJsonLayer;
+        currentGeoDataRef.current = geoData;
+
+        // Ajuster la vue
+        try {
+          const bounds = geoJsonLayer.getBounds();
+          if (bounds.isValid()) {
+            mapRef.current.fitBounds(bounds, {
+              padding: [50, 50],
+              animate: true,
+              duration: 0.4,
             });
           }
-        });
-      },
-    });
-
-    geoJsonLayer.addTo(mapRef.current);
-    geoJsonLayerRef.current = geoJsonLayer;
-    currentGeoDataRef.current = geoData;
-
-    // Ajuster la vue
-    try {
-      const bounds = geoJsonLayer.getBounds();
-      if (bounds.isValid()) {
-        mapRef.current.fitBounds(bounds, {
-          padding: [50, 50],
-          animate: true,
-          duration: 0.4,
-        });
+        } catch (error) {
+          console.error('%c❌ Bounds error:', 'color: #ef4444', error);
+        }
       }
-    } catch (error) {
-      console.error('%c❌ Bounds error:', 'color: #ef4444', error);
-    }
 
-    const elapsed = (performance.now() - startTime).toFixed(1);
-    console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+    } catch (error) {
+      console.error('%c❌ GeoJSON render error:', 'color: #ef4444', error);
+    }
   }, [geoData, mapReady, selectedFeatureId, mapLevel]);
 
   // ── Zoom sur sélection ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapRef.current || !selectedFeatureId) return;
+    if (!mapRef.current || !selectedFeatureId || isCleaningUpRef.current) return;
 
     const layer = layersByIdRef.current.get(selectedFeatureId);
     if (layer && 'getBounds' in layer) {
@@ -2255,9 +2291,9 @@ export default function Sidebar({
   // ── Initial load ─────────────────────────────────────────────────────────
   useEffect(() => { loadFilieres(); loadAnnees(); }, []);
 
-  // ── Cascade: filière → catégories ────────────────────────────────────────
+  // Modifiez la condition et l'appel pour être plus précis
   useEffect(() => {
-    if (selectedFiliere) {
+    if (selectedFiliere !== null) {
       loadCategories(selectedFiliere);
       setOpenSections(p => ({ ...p, categories: true }));
     } else {
@@ -2268,11 +2304,12 @@ export default function Sidebar({
 
   // ── Cascade: catégorie / filière → produits ──────────────────────────────
   useEffect(() => {
-    if (selectedCategorie) {
-      loadProduits(selectedCategorie, selectedFiliere);
+    if (selectedCategorie !== null) {
+      // On convertit le null potentiel en undefined pour satisfaire le type du paramètre optionnel
+      loadProduits(selectedCategorie, selectedFiliere ?? undefined);
       setOpenSections(p => ({ ...p, produits: true }));
-    } else if (selectedFiliere) {
-      loadProduits(undefined, selectedFiliere);
+    } else if (selectedFiliere !== null) {
+      loadProduits(undefined, selectedFiliere ?? undefined);
     } else {
       setProduits([]);
       setSelectedProduit(null);
@@ -2701,92 +2738,111 @@ interface DetailMapProps {
 export default function DetailMap({ geoData, targetId }: DetailMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const isCleaningUpRef = useRef(false);
 
   useEffect(() => {
-    if (!containerRef.current || !geoData) return;
+    if (!containerRef.current || !geoData || isCleaningUpRef.current) return;
 
     // Destroy previous instance
     if (mapRef.current) {
-      mapRef.current.remove();
-      mapRef.current = null;
+      try {
+        mapRef.current.off();
+        mapRef.current.remove();
+        mapRef.current = null;
+      } catch (e) {
+        console.warn('Error removing previous map:', e);
+      }
     }
 
     console.log('%c🗺️  [DetailMap] Initializing detail map with MapTiler', 'color: #22c55e; font-weight: bold');
 
-    const map = L.map(containerRef.current, {
-      center: [7.3697, 12.3547],
-      zoom: 6,
-      zoomControl: true,
-      preferCanvas: true,
-      fadeAnimation: true,
-      attributionControl: false,
-    });
-
-    // Attribution
-    L.control.attribution({
-      position: 'bottomright',
-      prefix: false,
-    }).addAttribution(
-      '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a>'
-    ).addTo(map);
-
-    // MapTiler Satellite Hybrid (Pour les détails)
-    L.tileLayer(
-      `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`,
-      {
-        tileSize: 512,
-        zoomOffset: -1,
-        minZoom: 1,
-        maxZoom: 20,
-        crossOrigin: true,
-      }
-    ).addTo(map);
-
-    let targetBounds: L.LatLngBounds | null = null;
-
-    L.geoJSON(geoData, {
-      style: (feature: any) => {
-        const isTarget = feature?.properties?.id === targetId;
-        return {
-          fillColor: isTarget ? '#22c55e' : '#d1fae5',
-          weight: isTarget ? 4 : 1.5,
-          opacity: 1,
-          color: isTarget ? '#15803d' : '#86efac',
-          fillOpacity: isTarget ? 0.75 : 0.3,
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const name = feature.properties?.nom || feature.properties?.name || '';
-        if (name) {
-          layer.bindTooltip(name, {
-            permanent: feature.properties?.id === targetId,
-            direction: 'center',
-            className: 'detail-map-tooltip',
-          });
-        }
-        if (feature.properties?.id === targetId) {
-          try {
-            targetBounds = (layer as any).getBounds();
-          } catch (_) {}
-        }
-      },
-    }).addTo(map);
-
-    // Zoom into target
-    if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
-      map.fitBounds(targetBounds as L.LatLngBounds, {
-        padding: [40, 40],
-        maxZoom: 13,
-        animate: true,
-        duration: 0.8,
+    try {
+      const map = L.map(containerRef.current, {
+        center: [7.3697, 12.3547],
+        zoom: 6,
+        zoomControl: true,
+        preferCanvas: true,
+        fadeAnimation: true,
+        attributionControl: false,
       });
+
+      // Attribution
+      L.control.attribution({
+        position: 'bottomright',
+        prefix: false,
+      }).addAttribution(
+        '<a href="https://www.maptiler.com/copyright/" target="_blank">© MapTiler</a>'
+      ).addTo(map);
+
+      // MapTiler Satellite Hybrid (Pour les détails)
+      L.tileLayer(
+        `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`,
+        {
+          tileSize: 512,
+          zoomOffset: -1,
+          minZoom: 1,
+          maxZoom: 20,
+          crossOrigin: true,
+        }
+      ).addTo(map);
+
+      let targetBounds: L.LatLngBounds | null = null;
+
+      L.geoJSON(geoData, {
+        style: (feature: any) => {
+          const isTarget = feature?.properties?.id === targetId;
+          return {
+            fillColor: isTarget ? '#22c55e' : '#d1fae5',
+            weight: isTarget ? 4 : 1.5,
+            opacity: 1,
+            color: isTarget ? '#15803d' : '#86efac',
+            fillOpacity: isTarget ? 0.75 : 0.3,
+          };
+        },
+        onEachFeature: (feature, layer) => {
+          const name = feature.properties?.nom || feature.properties?.name || '';
+          if (name) {
+            layer.bindTooltip(name, {
+              permanent: feature.properties?.id === targetId,
+              direction: 'center',
+              className: 'detail-map-tooltip',
+            });
+          }
+          if (feature.properties?.id === targetId) {
+            try {
+              targetBounds = (layer as any).getBounds();
+            } catch (_) {}
+          }
+        },
+      }).addTo(map);
+
+      // Zoom into target
+      if (targetBounds && (targetBounds as L.LatLngBounds).isValid()) {
+        map.fitBounds(targetBounds as L.LatLngBounds, {
+          padding: [40, 40],
+          maxZoom: 13,
+          animate: true,
+          duration: 0.8,
+        });
+      }
+
+      mapRef.current = map;
+    } catch (error) {
+      console.error('%c❌ DetailMap init failed:', 'color: #ef4444', error);
     }
 
-    mapRef.current = map;
-
     return () => {
-      map.remove();
-      mapRef.current = null;
+      isCleaningUpRef.current = true;
+      if (mapRef.current) {
+        try {
+          mapRef.current.off();
+          mapRef.current.remove();
+          mapRef.current = null;
+        } catch (e) {
+          console.warn('Error cleaning up map:', e);
+        }
+      }
+      isCleaningUpRef.current = false;
     };
   }, [geoData, targetId]);
 
@@ -3940,9 +3996,10 @@ FICHIER: D:\5GI\Projet-TI\webmap\next-env.d.ts
 
 /// <reference types="next" />
 /// <reference types="next/image-types/global" />
+/// <reference path="./.next/types/routes.d.ts" />
 
 // NOTE: This file should not be edited
-// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
 
 
 
@@ -4159,8 +4216,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\tsconfig.json
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts"
-, "tailwind.config.js"  ],
+    "**/*.mts",
+    "tailwind.config.js"
+  ],
   "exclude": [
     "node_modules"
   ]
@@ -4183,7 +4241,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\package.json
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "16.0.1",
+    "next": "^15.1.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "leaflet": "^1.9.4",
@@ -4219,7 +4277,7 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "dependencies": {
         "leaflet": "^1.9.4",
         "lucide-react": "^0.263.1",
-        "next": "16.0.1",
+        "next": "^15.1.6",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-leaflet": "^4.2.1"
@@ -4764,15 +4822,15 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/env": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/env/-/env-16.0.1.tgz",
-      "integrity": "sha512-LFvlK0TG2L3fEOX77OC35KowL8D7DlFF45C0OvKMC4hy8c/md1RC4UMNDlUGJqfCoCS2VWrZ4dSE6OjaX5+8mw==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/env/-/env-15.5.12.tgz",
+      "integrity": "sha512-pUvdJN1on574wQHjaBfNGDt9Mz5utDSZFsIIQkMzPgNS8ZvT4H2mwOrOIClwsQOb6EGx5M76/CZr6G8i6pSpLg==",
       "license": "MIT"
     },
     "node_modules/@next/swc-darwin-arm64": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-16.0.1.tgz",
-      "integrity": "sha512-R0YxRp6/4W7yG1nKbfu41bp3d96a0EalonQXiMe+1H9GTHfKxGNCGFNWUho18avRBPsO8T3RmdWuzmfurlQPbg==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.12.tgz",
+      "integrity": "sha512-RnRjBtH8S8eXCpUNkQ+543DUc7ys8y15VxmFU9HRqlo9BG3CcBUiwNtF8SNoi2xvGCVJq1vl2yYq+3oISBS0Zg==",
       "cpu": [
         "arm64"
       ],
@@ -4786,9 +4844,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-darwin-x64": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-16.0.1.tgz",
-      "integrity": "sha512-kETZBocRux3xITiZtOtVoVvXyQLB7VBxN7L6EPqgI5paZiUlnsgYv4q8diTNYeHmF9EiehydOBo20lTttCbHAg==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.12.tgz",
+      "integrity": "sha512-nqa9/7iQlboF1EFtNhWxQA0rQstmYRSBGxSM6g3GxvxHxcoeqVXfGNr9stJOme674m2V7r4E3+jEhhGvSQhJRA==",
       "cpu": [
         "x64"
       ],
@@ -4802,9 +4860,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-arm64-gnu": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-16.0.1.tgz",
-      "integrity": "sha512-hWg3BtsxQuSKhfe0LunJoqxjO4NEpBmKkE+P2Sroos7yB//OOX3jD5ISP2wv8QdUwtRehMdwYz6VB50mY6hqAg==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.12.tgz",
+      "integrity": "sha512-dCzAjqhDHwmoB2M4eYfVKqXs99QdQxNQVpftvP1eGVppamXh/OkDAwV737Zr0KPXEqRUMN4uCjh6mjO+XtF3Mw==",
       "cpu": [
         "arm64"
       ],
@@ -4818,9 +4876,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-arm64-musl": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-16.0.1.tgz",
-      "integrity": "sha512-UPnOvYg+fjAhP3b1iQStcYPWeBFRLrugEyK/lDKGk7kLNua8t5/DvDbAEFotfV1YfcOY6bru76qN9qnjLoyHCQ==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.12.tgz",
+      "integrity": "sha512-+fpGWvQiITgf7PUtbWY1H7qUSnBZsPPLyyq03QuAKpVoTy/QUx1JptEDTQMVvQhvizCEuNLEeghrQUyXQOekuw==",
       "cpu": [
         "arm64"
       ],
@@ -4834,9 +4892,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-x64-gnu": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-16.0.1.tgz",
-      "integrity": "sha512-Et81SdWkcRqAJziIgFtsFyJizHoWne4fzJkvjd6V4wEkWTB4MX6J0uByUb0peiJQ4WeAt6GGmMszE5KrXK6WKg==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.12.tgz",
+      "integrity": "sha512-jSLvgdRRL/hrFAPqEjJf1fFguC719kmcptjNVDJl26BnJIpjL3KH5h6mzR4mAweociLQaqvt4UyzfbFjgAdDcw==",
       "cpu": [
         "x64"
       ],
@@ -4850,9 +4908,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-linux-x64-musl": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-16.0.1.tgz",
-      "integrity": "sha512-qBbgYEBRrC1egcG03FZaVfVxrJm8wBl7vr8UFKplnxNRprctdP26xEv9nJ07Ggq4y1adwa0nz2mz83CELY7N6Q==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.12.tgz",
+      "integrity": "sha512-/uaF0WfmYqQgLfPmN6BvULwxY0dufI2mlN2JbOKqqceZh1G4hjREyi7pg03zjfyS6eqNemHAZPSoP84x17vo6w==",
       "cpu": [
         "x64"
       ],
@@ -4866,9 +4924,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-win32-arm64-msvc": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-16.0.1.tgz",
-      "integrity": "sha512-cPuBjYP6I699/RdbHJonb3BiRNEDm5CKEBuJ6SD8k3oLam2fDRMKAvmrli4QMDgT2ixyRJ0+DTkiODbIQhRkeQ==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.12.tgz",
+      "integrity": "sha512-xhsL1OvQSfGmlL5RbOmU+FV120urrgFpYLq+6U8C6KIym32gZT6XF/SDE92jKzzlPWskkbjOKCpqk5m4i8PEfg==",
       "cpu": [
         "arm64"
       ],
@@ -4882,9 +4940,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@next/swc-win32-x64-msvc": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-16.0.1.tgz",
-      "integrity": "sha512-XeEUJsE4JYtfrXe/LaJn3z1pD19fK0Q6Er8Qoufi+HqvdO4LEPyCxLUt4rxA+4RfYo6S9gMlmzCMU2F+AatFqQ==",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.12.tgz",
+      "integrity": "sha512-Z1Dh6lhFkxvBDH1FoW6OU/L6prYwPSlwjLiZkExIAh8fbP6iI/M7iGTQAJPYJ9YFlWobCZ1PHbchFhFYb2ADkw==",
       "cpu": [
         "x64"
       ],
@@ -4973,9 +5031,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/@types/node": {
-      "version": "20.19.30",
-      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.30.tgz",
-      "integrity": "sha512-WJtwWJu7UdlvzEAUm484QNg5eAoq5QR08KDNx7g45Usrs2NtOPiX8ugDqmKdXkyL03rBqU5dYNYVQetEpBHq2g==",
+      "version": "20.19.32",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.32.tgz",
+      "integrity": "sha512-Ez8QE4DMfhjjTsES9K2dwfV258qBui7qxUsoaixZDiTzbde4U12e1pXGNu/ECsUIOi5/zoCxAQxIhQnaUQ2VvA==",
       "dev": true,
       "license": "MIT",
       "dependencies": {
@@ -4990,9 +5048,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "license": "MIT"
     },
     "node_modules/@types/react": {
-      "version": "18.3.27",
-      "resolved": "https://registry.npmjs.org/@types/react/-/react-18.3.27.tgz",
-      "integrity": "sha512-cisd7gxkzjBKU2GgdYrTdtQx1SORymWyaAFhaxQPK9bYO9ot3Y5OikQRvY0VYQtvwjeQnizCINJAenh/V7MK2w==",
+      "version": "18.3.28",
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-18.3.28.tgz",
+      "integrity": "sha512-z9VXpC7MWrhfWipitjNdgCauoMLRdIILQsAEV+ZesIzBq/oUlxk0m3ApZuMFCXdnS4U7KrI+l3WRUEGQ8K1QKw==",
       "dev": true,
       "license": "MIT",
       "dependencies": {
@@ -5029,19 +5087,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       },
       "engines": {
         "node": ">= 8"
-      }
-    },
-    "node_modules/anymatch/node_modules/picomatch": {
-      "version": "2.3.1",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
-      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
-      "dev": true,
-      "license": "MIT",
-      "engines": {
-        "node": ">=8.6"
-      },
-      "funding": {
-        "url": "https://github.com/sponsors/jonschlinkert"
       }
     },
     "node_modules/arg": {
@@ -5169,9 +5214,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/caniuse-lite": {
-      "version": "1.0.30001767",
-      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001767.tgz",
-      "integrity": "sha512-34+zUAMhSH+r+9eKmYG+k2Rpt8XttfE4yXAjoZvkAPs15xcYQhyBYdalJ65BzivAvGRMViEjy6oKr/S91loekQ==",
+      "version": "1.0.30001769",
+      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001769.tgz",
+      "integrity": "sha512-BCfFL1sHijQlBGWBMuJyhZUhzo7wer5sVj9hqekB/7xn0Ypy+pER/edCYQm4exbXj4WiySGp40P8UuTh6w1srg==",
       "funding": [
         {
           "type": "opencollective",
@@ -5287,9 +5332,9 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "license": "MIT"
     },
     "node_modules/electron-to-chromium": {
-      "version": "1.5.283",
-      "resolved": "https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.283.tgz",
-      "integrity": "sha512-3vifjt1HgrGW/h76UEeny+adYApveS9dH2h3p57JYzBSXJIKUJAvtmIytDKjcSCt9xHfrNCFJ7gts6vkhuq++w==",
+      "version": "1.5.286",
+      "resolved": "https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.286.tgz",
+      "integrity": "sha512-9tfDXhJ4RKFNerfjdCcZfufu49vg620741MNs26a9+bhLThdB+plgMeou98CAaHu/WATj2iHOOHTp1hWtABj2A==",
       "dev": true,
       "license": "ISC"
     },
@@ -5341,24 +5386,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "license": "ISC",
       "dependencies": {
         "reusify": "^1.0.4"
-      }
-    },
-    "node_modules/fdir": {
-      "version": "6.5.0",
-      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
-      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
-      "dev": true,
-      "license": "MIT",
-      "engines": {
-        "node": ">=12.0.0"
-      },
-      "peerDependencies": {
-        "picomatch": "^3 || ^4"
-      },
-      "peerDependenciesMeta": {
-        "picomatch": {
-          "optional": true
-        }
       }
     },
     "node_modules/fill-range": {
@@ -5588,19 +5615,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">=8.6"
       }
     },
-    "node_modules/micromatch/node_modules/picomatch": {
-      "version": "2.3.1",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
-      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
-      "dev": true,
-      "license": "MIT",
-      "engines": {
-        "node": ">=8.6"
-      },
-      "funding": {
-        "url": "https://github.com/sponsors/jonschlinkert"
-      }
-    },
     "node_modules/mz": {
       "version": "2.7.0",
       "resolved": "https://registry.npmjs.org/mz/-/mz-2.7.0.tgz",
@@ -5632,13 +5646,12 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       }
     },
     "node_modules/next": {
-      "version": "16.0.1",
-      "resolved": "https://registry.npmjs.org/next/-/next-16.0.1.tgz",
-      "integrity": "sha512-e9RLSssZwd35p7/vOa+hoDFggUZIUbZhIUSLZuETCwrCVvxOs87NamoUzT+vbcNAL8Ld9GobBnWOA6SbV/arOw==",
-      "deprecated": "This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/CVE-2025-66478 for more details.",
+      "version": "15.5.12",
+      "resolved": "https://registry.npmjs.org/next/-/next-15.5.12.tgz",
+      "integrity": "sha512-Fi/wQ4Etlrn60rz78bebG1i1SR20QxvV8tVp6iJspjLUSHcZoeUXCt+vmWoEcza85ElZzExK/jJ/F6SvtGktjA==",
       "license": "MIT",
       "dependencies": {
-        "@next/env": "16.0.1",
+        "@next/env": "15.5.12",
         "@swc/helpers": "0.5.15",
         "caniuse-lite": "^1.0.30001579",
         "postcss": "8.4.31",
@@ -5648,18 +5661,18 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "next": "dist/bin/next"
       },
       "engines": {
-        "node": ">=20.9.0"
+        "node": "^18.18.0 || ^19.8.0 || >= 20.0.0"
       },
       "optionalDependencies": {
-        "@next/swc-darwin-arm64": "16.0.1",
-        "@next/swc-darwin-x64": "16.0.1",
-        "@next/swc-linux-arm64-gnu": "16.0.1",
-        "@next/swc-linux-arm64-musl": "16.0.1",
-        "@next/swc-linux-x64-gnu": "16.0.1",
-        "@next/swc-linux-x64-musl": "16.0.1",
-        "@next/swc-win32-arm64-msvc": "16.0.1",
-        "@next/swc-win32-x64-msvc": "16.0.1",
-        "sharp": "^0.34.4"
+        "@next/swc-darwin-arm64": "15.5.12",
+        "@next/swc-darwin-x64": "15.5.12",
+        "@next/swc-linux-arm64-gnu": "15.5.12",
+        "@next/swc-linux-arm64-musl": "15.5.12",
+        "@next/swc-linux-x64-gnu": "15.5.12",
+        "@next/swc-linux-x64-musl": "15.5.12",
+        "@next/swc-win32-arm64-msvc": "15.5.12",
+        "@next/swc-win32-x64-msvc": "15.5.12",
+        "sharp": "^0.34.3"
       },
       "peerDependencies": {
         "@opentelemetry/api": "^1.1.0",
@@ -5763,13 +5776,13 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       "license": "ISC"
     },
     "node_modules/picomatch": {
-      "version": "4.0.3",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
-      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
+      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
       "dev": true,
       "license": "MIT",
       "engines": {
-        "node": ">=12"
+        "node": ">=8.6"
       },
       "funding": {
         "url": "https://github.com/sponsors/jonschlinkert"
@@ -6041,19 +6054,6 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
         "node": ">=8.10.0"
       }
     },
-    "node_modules/readdirp/node_modules/picomatch": {
-      "version": "2.3.1",
-      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz",
-      "integrity": "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==",
-      "dev": true,
-      "license": "MIT",
-      "engines": {
-        "node": ">=8.6"
-      },
-      "funding": {
-        "url": "https://github.com/sponsors/jonschlinkert"
-      }
-    },
     "node_modules/resolve": {
       "version": "1.22.11",
       "resolved": "https://registry.npmjs.org/resolve/-/resolve-1.22.11.tgz",
@@ -6321,6 +6321,37 @@ FICHIER: D:\5GI\Projet-TI\webmap\package-lock.json
       },
       "funding": {
         "url": "https://github.com/sponsors/SuperchupuDev"
+      }
+    },
+    "node_modules/tinyglobby/node_modules/fdir": {
+      "version": "6.5.0",
+      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": {
+        "picomatch": "^3 || ^4"
+      },
+      "peerDependenciesMeta": {
+        "picomatch": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/tinyglobby/node_modules/picomatch": {
+      "version": "4.0.3",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz",
+      "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
       }
     },
     "node_modules/to-regex-range": {

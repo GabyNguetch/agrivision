@@ -38,6 +38,7 @@ export default memo(function MapView({
   const onFeatureClickRef = useRef(onFeatureClick);
   const currentGeoDataRef = useRef<GeoJSONFeatureCollection | null>(null);
   const layersByIdRef = useRef<Map<number, L.Layer>>(new Map());
+  const isCleaningUpRef = useRef(false);
 
   useEffect(() => {
     onFeatureClickRef.current = onFeatureClick;
@@ -45,7 +46,7 @@ export default memo(function MapView({
 
   // ── Initialisation carte (une seule fois) ────────────────────────────────
   useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) return;
+    if (!mapContainerRef.current || mapRef.current || isCleaningUpRef.current) return;
 
     console.log('%c🗺️  [MapView] Initializing map...', 'color: #22c55e; font-weight: bold');
     
@@ -94,18 +95,37 @@ export default memo(function MapView({
     }
 
     return () => {
-      if (mapRef.current) {
-        console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
-        mapRef.current.remove();
-        mapRef.current = null;
-        setMapReady(false);
+      console.log('%c🗑️  Cleaning up map', 'color: #f59e0b');
+      isCleaningUpRef.current = true;
+      
+      if (geoJsonLayerRef.current && mapRef.current) {
+        try {
+          mapRef.current.removeLayer(geoJsonLayerRef.current);
+          geoJsonLayerRef.current = null;
+        } catch (e) {
+          console.warn('Error removing GeoJSON layer:', e);
+        }
       }
+      
+      if (mapRef.current) {
+        try {
+          mapRef.current.off();
+          mapRef.current.remove();
+          mapRef.current = null;
+        } catch (e) {
+          console.warn('Error removing map:', e);
+        }
+      }
+      
+      layersByIdRef.current.clear();
+      setMapReady(false);
+      isCleaningUpRef.current = false;
     };
   }, []);
 
   // ── Mise à jour GeoJSON OPTIMISÉE (incrémentale si possible) ──────────────
   useEffect(() => {
-    if (!mapRef.current || !mapReady || !geoData) return;
+    if (!mapRef.current || !mapReady || !geoData || isCleaningUpRef.current) return;
 
     const startTime = performance.now();
     
@@ -125,16 +145,20 @@ export default memo(function MapView({
         
         const layer = layersByIdRef.current.get(id);
         if (layer && layer instanceof L.Path) {
-          const isSelected = id === selectedFeatureId;
-          const baseColor = getFeatureColor(feature);
-          
-          layer.setStyle({
-            fillColor: isSelected ? '#22c55e' : baseColor,
-            weight: isSelected ? 3 : 1.5,
-            opacity: 1,
-            color: isSelected ? '#15803d' : '#16a34a',
-            fillOpacity: isSelected ? 0.85 : 0.65,
-          });
+          try {
+            const isSelected = id === selectedFeatureId;
+            const baseColor = getFeatureColor(feature);
+            
+            layer.setStyle({
+              fillColor: isSelected ? '#22c55e' : baseColor,
+              weight: isSelected ? 3 : 1.5,
+              opacity: 1,
+              color: isSelected ? '#15803d' : '#16a34a',
+              fillOpacity: isSelected ? 0.85 : 0.65,
+            });
+          } catch (e) {
+            console.warn('Error updating layer style:', e);
+          }
         }
       });
       
@@ -147,105 +171,117 @@ export default memo(function MapView({
     // Sinon, re-créer la couche complète
     console.log(`%c🔄 Full GeoJSON update - ${geoData.features.length} features`, 'color: #3b82f6; font-weight: bold');
 
-    if (geoJsonLayerRef.current) {
-      mapRef.current.removeLayer(geoJsonLayerRef.current);
-      geoJsonLayerRef.current = null;
+    if (geoJsonLayerRef.current && mapRef.current) {
+      try {
+        mapRef.current.removeLayer(geoJsonLayerRef.current);
+        geoJsonLayerRef.current = null;
+      } catch (e) {
+        console.warn('Error removing old GeoJSON layer:', e);
+      }
     }
     
     layersByIdRef.current.clear();
 
-    const geoJsonLayer = L.geoJSON(geoData, {
-      style: (feature) => {
-        const isSelected = feature?.properties?.id === selectedFeatureId;
-        const baseColor = getFeatureColor(feature);
+    try {
+      const geoJsonLayer = L.geoJSON(geoData, {
+        style: (feature) => {
+          const isSelected = feature?.properties?.id === selectedFeatureId;
+          const baseColor = getFeatureColor(feature);
 
-        return {
-          fillColor: isSelected ? '#22c55e' : baseColor,
-          weight: isSelected ? 3 : 1.5,
-          opacity: 1,
-          color: isSelected ? '#15803d' : '#16a34a',
-          fillOpacity: isSelected ? 0.85 : 0.65,
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const props = feature.properties;
-        if (!props) return;
+          return {
+            fillColor: isSelected ? '#22c55e' : baseColor,
+            weight: isSelected ? 3 : 1.5,
+            opacity: 1,
+            color: isSelected ? '#15803d' : '#16a34a',
+            fillOpacity: isSelected ? 0.85 : 0.65,
+          };
+        },
+        onEachFeature: (feature, layer) => {
+          const props = feature.properties;
+          if (!props) return;
 
-        // Sauvegarder la référence au layer
-        if (props.id) {
-          layersByIdRef.current.set(props.id, layer);
-        }
-
-        const name = props.nom || props.name || 'Sans nom';
-
-        // Tooltip
-        const tooltipContent = `
-          <div class="font-semibold text-base">${name}</div>
-          ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
-          ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
-          ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
-          ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
-        `;
-
-        layer.bindTooltip(tooltipContent, {
-          permanent: false,
-          direction: 'center',
-          className: 'map-tooltip',
-          opacity: 0.95,
-        });
-
-        // Click handler
-        layer.on('click', () => {
-          console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
-          if (onFeatureClickRef.current) {
-            onFeatureClickRef.current(props);
+          // Sauvegarder la référence au layer
+          if (props.id) {
+            layersByIdRef.current.set(props.id, layer);
           }
-        });
 
-        // Hover effects
-        layer.on('mouseover', function (this: any) {
-          if (this.setStyle) {
-            this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
-          }
-        });
-        
-        layer.on('mouseout', function (this: any) {
-          if (this.setStyle) {
-            const isSelected = props.id === selectedFeatureId;
-            this.setStyle({
-              fillOpacity: isSelected ? 0.85 : 0.65,
-              weight: isSelected ? 3 : 1.5,
+          const name = props.nom || props.name || 'Sans nom';
+
+          // Tooltip
+          const tooltipContent = `
+            <div class="font-semibold text-base">${name}</div>
+            ${props.population ? `<div class="text-xs mt-1">👥 ${new Intl.NumberFormat('fr-FR').format(props.population)} hab.</div>` : ''}
+            ${props.superficie_km2 ? `<div class="text-xs">📏 ${new Intl.NumberFormat('fr-FR').format(props.superficie_km2)} km²</div>` : ''}
+            ${props.production_count ? `<div class="text-xs">🌾 ${props.production_count} production(s)</div>` : ''}
+            ${props.production_total ? `<div class="text-xs">📊 ${new Intl.NumberFormat('fr-FR').format(props.production_total)} unités</div>` : ''}
+          `;
+
+          layer.bindTooltip(tooltipContent, {
+            permanent: false,
+            direction: 'center',
+            className: 'map-tooltip',
+            opacity: 0.95,
+          });
+
+          // Click handler
+          layer.on('click', () => {
+            if (!isCleaningUpRef.current) {
+              console.log('%c🖱️  Feature clicked:', 'color: #8b5cf6', props);
+              if (onFeatureClickRef.current) {
+                onFeatureClickRef.current(props);
+              }
+            }
+          });
+
+          // Hover effects
+          layer.on('mouseover', function (this: any) {
+            if (!isCleaningUpRef.current && this.setStyle) {
+              this.setStyle({ fillOpacity: 0.9, weight: 2.5 });
+            }
+          });
+          
+          layer.on('mouseout', function (this: any) {
+            if (!isCleaningUpRef.current && this.setStyle) {
+              const isSelected = props.id === selectedFeatureId;
+              this.setStyle({
+                fillOpacity: isSelected ? 0.85 : 0.65,
+                weight: isSelected ? 3 : 1.5,
+              });
+            }
+          });
+        },
+      });
+
+      if (mapRef.current && !isCleaningUpRef.current) {
+        geoJsonLayer.addTo(mapRef.current);
+        geoJsonLayerRef.current = geoJsonLayer;
+        currentGeoDataRef.current = geoData;
+
+        // Ajuster la vue
+        try {
+          const bounds = geoJsonLayer.getBounds();
+          if (bounds.isValid()) {
+            mapRef.current.fitBounds(bounds, {
+              padding: [50, 50],
+              animate: true,
+              duration: 0.4,
             });
           }
-        });
-      },
-    });
-
-    geoJsonLayer.addTo(mapRef.current);
-    geoJsonLayerRef.current = geoJsonLayer;
-    currentGeoDataRef.current = geoData;
-
-    // Ajuster la vue
-    try {
-      const bounds = geoJsonLayer.getBounds();
-      if (bounds.isValid()) {
-        mapRef.current.fitBounds(bounds, {
-          padding: [50, 50],
-          animate: true,
-          duration: 0.4,
-        });
+        } catch (error) {
+          console.error('%c❌ Bounds error:', 'color: #ef4444', error);
+        }
       }
-    } catch (error) {
-      console.error('%c❌ Bounds error:', 'color: #ef4444', error);
-    }
 
-    const elapsed = (performance.now() - startTime).toFixed(1);
-    console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      console.log(`%c✅ GeoJSON rendered in ${elapsed}ms`, 'color: #22c55e; font-weight: bold');
+    } catch (error) {
+      console.error('%c❌ GeoJSON render error:', 'color: #ef4444', error);
+    }
   }, [geoData, mapReady, selectedFeatureId, mapLevel]);
 
   // ── Zoom sur sélection ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapRef.current || !selectedFeatureId) return;
+    if (!mapRef.current || !selectedFeatureId || isCleaningUpRef.current) return;
 
     const layer = layersByIdRef.current.get(selectedFeatureId);
     if (layer && 'getBounds' in layer) {
